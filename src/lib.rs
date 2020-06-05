@@ -96,7 +96,7 @@ pub struct TransfersSynched {
 /// Replicas for validation.
 #[derive(Clone, Hash, Eq, PartialEq, PartialOrd, Serialize, Deserialize, Debug)]
 pub struct TransferInitiated {
-    signed_transfer: SignedTransfer,
+    pub signed_transfer: SignedTransfer,
 }
 
 /// Raised when a Replica responds with
@@ -129,7 +129,7 @@ mod test {
         Dot,
     };
     use rand::Rng;
-    use safe_nd::{AccountId, ClientFullId, DebitAgreementProof, Money, PublicKey, Transfer};
+    use safe_nd::{AccountId, ClientFullId, Money, DebitAgreementProof, PublicKey, SafeKey, Transfer};
     use std::collections::{HashMap, HashSet};
     use threshold_crypto::{PublicKeySet, SecretKey, SecretKeySet, SecretKeyShare};
 

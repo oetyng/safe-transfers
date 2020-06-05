@@ -10,13 +10,14 @@ readme = "README.md"
 repository = "https://github.com/maidsafe/safe-transfers"
 version = "0.1.0"
 
-# [patch.crates-io]
-# safe-nd =  { git = "https://github.com/oetyng/safe-nd.git", rev = "2c16b8c" }
+[patch.crates-io]
+safe-nd =  { path="../safe-nd", version="0.9.0" }
 
 [dependencies]
 # # Ensure bincode version is identical to that in SAFE Client Libs and SAFE Network Data.
 bincode = "=1.1.4"
-safe-nd = { git = "https://github.com/oetyng/safe-nd.git", branch = "at2-network-payments" }
+safe-nd =  "0.9.0" 
+# safe-nd = { git = "https://github.com/oetyng/safe-nd.git", branch = "at2-network-payments" }
 serde = { version = "~1.0.97", features = ["derive"] }
 crdts = { git = "https://github.com/rust-crdt/rust-crdt", rev= "eab41f7" }
 threshold_crypto = "~0.3.2"
