@@ -107,7 +107,7 @@ pub struct TransferValidationReceived {
     validation: TransferValidated,
     /// Added when quorum of validations
     /// have been received from Replicas.
-    proof: Option<DebitAgreementProof>,
+    pub proof: Option<DebitAgreementProof>,
 }
 
 /// Raised when the Actor has accumulated a
