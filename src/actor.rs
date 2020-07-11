@@ -15,7 +15,7 @@ use crdts::Dot;
 use itertools::Itertools;
 use log::{debug, warn};
 use safe_nd::{
-    AccountId, DebitAgreementProof, Error, Money, ReplicaEvent, Result, SafeKey, Signature,
+    AccountId, DebitAgreementProof, Error, Keypair, Money, ReplicaEvent, Result, Signature,
     SignatureShare, SignedTransfer, Transfer,
 };
 use std::collections::{BTreeMap, HashSet};
@@ -37,7 +37,7 @@ pub struct SecretKeyShare {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Actor<V: ReplicaValidator> {
     id: AccountId,
-    client_safe_key: SafeKey,
+    keypair: Keypair,
     /// Set of all transfers impacting a given identity
     account: Account,
     /// Ensures that the actor's transfer
@@ -62,11 +62,11 @@ impl<V: ReplicaValidator> Actor<V> {
     /// If upper layer trusts them, the validator might do nothing but return "true".
     /// If it wants to execute some logic for verifying that the remote replicas are in fact part of the system,
     /// before accepting credits, it then implements that in the replica_validator.
-    pub fn new(client_safe_key: SafeKey, replicas: PublicKeySet, replica_validator: V) -> Actor<V> {
-        let id = client_safe_key.public_key();
+    pub fn new(keypair: Keypair, replicas: PublicKeySet, replica_validator: V) -> Actor<V> {
+        let id = keypair.public_key();
         Actor {
             id,
-            client_safe_key,
+            keypair,
             replicas,
             replica_validator,
             account: Account::new(id),
@@ -78,14 +78,14 @@ impl<V: ReplicaValidator> Actor<V> {
     /// Temp, for test purposes
     pub fn from_snapshot(
         account: Account,
-        client_safe_key: SafeKey,
+        keypair: Keypair,
         replicas: PublicKeySet,
         replica_validator: V,
     ) -> Actor<V> {
-        let id = client_safe_key.public_key();
+        let id = keypair.public_key();
         Actor {
             id,
-            client_safe_key,
+            keypair,
             replicas,
             replica_validator,
             account,
@@ -400,7 +400,7 @@ impl<V: ReplicaValidator> Actor<V> {
     fn sign(&self, transfer: &Transfer) -> Result<Signature> {
         match bincode::serialize(transfer) {
             Err(_) => Err(Error::NetworkOther("Could not serialise transfer".into())),
-            Ok(data) => Ok(self.client_safe_key.sign(&data)),
+            Ok(data) => Ok(self.keypair.sign(&data)),
         }
     }
 
@@ -484,8 +484,7 @@ impl<V: ReplicaValidator> Actor<V> {
             Err(_) => Err(Error::NetworkOther("Could not serialise transfer".into())),
             Ok(data) => {
                 let actor_sig = self
-                    .client_safe_key
-                    .public_id()
+                    .keypair
                     .public_key()
                     .verify(&signed_transfer.actor_signature, data);
                 if actor_sig.is_ok() {
@@ -505,8 +504,8 @@ mod test {
     };
     use crdts::Dot;
     use safe_nd::{
-        ClientFullId, DebitAgreementProof, Error, Money, PublicKey, Result, SafeKey, Signature,
-        SignatureShare, Transfer, TransferValidated,
+        DebitAgreementProof, Error, Keypair, Money, PublicKey, Result, Signature, SignatureShare,
+        Transfer, TransferValidated,
     };
     use serde::Serialize;
     use std::collections::BTreeMap;
@@ -703,8 +702,8 @@ mod test {
 
     fn get_actor_and_replicas_sk_set(amount: u64) -> Result<(Actor<Validator>, SecretKeySet)> {
         let mut rng = rand::thread_rng();
-        let client_safe_key = SafeKey::client(ClientFullId::new_ed25519(&mut rng));
-        let client_pubkey = client_safe_key.public_key();
+        let keypair = Keypair::new_ed25519(&mut rng);
+        let client_pubkey = keypair.public_key();
         let bls_secret_key = SecretKeySet::random(1, &mut rng);
         let replicas_id = bls_secret_key.public_keys();
         let balance = Money::from_nano(amount);
@@ -713,7 +712,7 @@ mod test {
         let replica_validator = Validator {};
         let mut account = Account::new(transfer.to);
         account.append(transfer)?;
-        let actor = Actor::from_snapshot(account, client_safe_key, replicas_id, replica_validator);
+        let actor = Actor::from_snapshot(account, keypair, replicas_id, replica_validator);
         Ok((actor, bls_secret_key))
     }
 

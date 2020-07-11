@@ -184,8 +184,7 @@ mod test {
     };
     use rand::Rng;
     use safe_nd::{
-        AccountId, ClientFullId, DebitAgreementProof, Money, PublicKey, Result, SafeKey,
-        SignedTransfer, Transfer,
+        AccountId, DebitAgreementProof, Keypair, Money, PublicKey, Result, SignedTransfer, Transfer,
     };
     use std::collections::{BTreeMap, HashMap, HashSet};
     use threshold_crypto::{PublicKeySet, SecretKey, SecretKeySet, SecretKeyShare};
@@ -507,10 +506,8 @@ mod test {
 
     fn setup_account(balance: u64, replica_group: u8) -> TestAccount {
         let mut rng = rand::thread_rng();
-        let client_full_id = ClientFullId::new_ed25519(&mut rng);
-
-        let client_safe_key = SafeKey::client(client_full_id);
-        let to = client_safe_key.public_id().public_key();
+        let keypair = Keypair::new_ed25519(&mut rng);
+        let to = keypair.public_key();
         let mut account = Account::new(to);
 
         let amount = Money::from_nano(balance);
@@ -524,7 +521,7 @@ mod test {
 
         TestAccount {
             account,
-            client_safe_key,
+            keypair,
             replica_group,
         }
     }
@@ -536,7 +533,7 @@ mod test {
 
         let actor = Actor::from_snapshot(
             account.account,
-            account.client_safe_key,
+            account.keypair,
             replica_group.id.clone(),
             Validator {},
         );
@@ -641,7 +638,7 @@ mod test {
     #[derive(Debug, Clone)]
     struct TestAccount {
         account: Account,
-        client_safe_key: SafeKey,
+        keypair: Keypair,
         replica_group: u8,
     }
 
