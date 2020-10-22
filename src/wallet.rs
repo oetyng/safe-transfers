@@ -6,27 +6,58 @@
 // KIND, either express or implied. Please review the Licences for the specific language governing
 // permissions and limitations relating to use of the SAFE Network Software.
 
-use sn_data_types::{Error, Money, PublicKey, Result, Transfer, TransferId};
+use sn_data_types::{Credit, CreditId, Debit, Error, Money, PublicKey, Result};
 use std::collections::HashSet;
+
+#[derive(Debug, Clone)]
+pub struct WalletSnapshot {
+    pub balance: Money,
+    pub debit_version: u64,
+    pub credit_ids: HashSet<CreditId>,
+}
+
+impl Into<WalletSnapshot> for Wallet {
+    fn into(self) -> WalletSnapshot {
+        WalletSnapshot {
+            balance: self.balance,
+            debit_version: self.debit_version,
+            credit_ids: self.credit_ids.clone(),
+        }
+    }
+}
+
 /// The balance and history of transfers for a wallet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wallet {
     id: PublicKey,
     balance: Money,
-    credits: Vec<Transfer>,
-    debits: Vec<Transfer>,
-    transfer_ids: HashSet<TransferId>,
+    debit_version: u64,
+    credit_ids: HashSet<CreditId>,
 }
 
 impl Wallet {
-    /// Creates a new wallet out of a credit.
+    /// Creates a new wallet.
     pub fn new(id: PublicKey) -> Self {
         Self {
             id,
             balance: Money::zero(),
-            credits: vec![],
-            debits: Default::default(),
-            transfer_ids: Default::default(),
+            debit_version: 0,
+            credit_ids: Default::default(),
+        }
+    }
+
+    /// Creates a wallet from existing state.
+    pub fn from(
+        id: PublicKey,
+        balance: Money,
+        debit_version: u64,
+        credit_ids: HashSet<CreditId>,
+    ) -> Self {
+        Self {
+            id,
+            balance,
+            debit_version,
+            credit_ids,
         }
     }
 
@@ -37,7 +68,7 @@ impl Wallet {
 
     /// Query for next version.
     pub fn next_debit(&self) -> u64 {
-        self.debits.len() as u64
+        self.debit_version
     }
 
     /// Query for balance.
@@ -45,103 +76,74 @@ impl Wallet {
         self.balance
     }
 
-    /// Query for already stored transfer.
-    pub fn contains(&self, id: &TransferId) -> bool {
-        self.transfer_ids.contains(id)
+    /// Query for already received credit.
+    pub fn contains(&self, id: &CreditId) -> bool {
+        self.credit_ids.contains(id)
     }
 
-    /// Zero based indexing, first debit will be nr 0
-    /// (we could just as well just compare debits.len()..)
-    pub fn is_sequential(&self, transfer: &Transfer) -> Result<bool> {
-        let id = transfer.id;
-        if id.actor != self.id {
-            Err(Error::from("Wallet operation is non-sequential"))
-        } else {
-            match self.debits.last() {
-                None => Ok(id.counter == 0), // if no debits have been made, transfer counter must be 0
-                Some(previous) => Ok(previous.id.counter + 1 == id.counter),
+    /// Mutates state.
+    pub fn apply_debit(&mut self, debit: Debit) -> Result<()> {
+        if self.id == debit.id.actor {
+            match self.balance.checked_sub(debit.amount) {
+                Some(amount) => self.balance = amount,
+                None => return Err(Error::from("overflow when subtracting!")),
             }
-        }
-    }
-
-    /// Query for new credits since specified index.
-    /// NB: This is not guaranteed to give you all unknown to you,
-    /// since there is no absolute order on the credits!
-    pub fn credits_since(&self, index: usize) -> Vec<Transfer> {
-        if self.credits.len() > index {
-            self.credits.split_at(index).1.to_vec()
+            self.debit_version += 1;
+            Ok(())
         } else {
-            vec![]
-        }
-    }
-
-    /// Query for new debit since specified index.
-    pub fn debits_since(&self, index: usize) -> Vec<Transfer> {
-        if self.debits.len() > index {
-            self.debits.split_at(index).1.to_vec()
-        } else {
-            vec![]
+            Err(Error::from(format!(
+                "Debit does not belong to this wallet({:?}): debit: {:?}",
+                self.id, debit
+            )))
         }
     }
 
     /// Mutates state.
-    pub fn append(&mut self, transfer: Transfer) -> Result<()> {
-        if self.id == transfer.id.actor {
-            match self.balance.checked_sub(transfer.amount) {
-                Some(amount) => self.balance = amount,
-                None => return Err(Error::from("overflow when subtracting!")),
-            }
-            let _ = self.transfer_ids.insert(transfer.id);
-            self.debits.push(transfer);
-            Ok(())
-        } else if self.id == transfer.to {
-            match self.balance.checked_add(transfer.amount) {
+    pub fn apply_credit(&mut self, credit: Credit) -> Result<()> {
+        if self.id == credit.recipient() {
+            match self.balance.checked_add(credit.amount) {
                 Some(amount) => self.balance = amount,
                 None => return Err(Error::from("overflow when adding!")),
             }
-            let _ = self.transfer_ids.insert(transfer.id);
-            self.credits.push(transfer);
+            let _ = self.credit_ids.insert(credit.id);
             Ok(())
         } else {
             Err(Error::from(format!(
-                "Transfer does not belong to this wallet({:?}): transfer: {:?}",
-                self.id, transfer
+                "Credit does not belong to this wallet({:?}): credit: {:?}",
+                self.id, credit
             )))
         }
     }
 
     /// Test-helper API to simulate Client Transfers.
     #[cfg(feature = "simulated-payouts")]
-    pub fn simulated_credit(&mut self, transfer: Transfer) {
-        if self.id == transfer.to {
-            match self.balance.checked_add(transfer.amount) {
+    pub fn simulated_credit(&mut self, credit: Credit) {
+        if self.id == credit.recipient() {
+            match self.balance.checked_add(credit.amount) {
                 Some(amount) => self.balance = amount,
                 None => panic!("overflow when adding!"),
             }
-            let _ = self.transfer_ids.insert(transfer.id);
-            self.credits.push(transfer);
         } else {
             panic!(
-                "Credit transfer does not belong to this wallet({:?}): transfer: {:?}",
-                self.id, transfer
+                "Credit does not belong to this wallet({:?}): credit: {:?}",
+                self.id, credit
             )
         }
     }
 
     /// Test-helper API to simulate section payments.
     #[cfg(feature = "simulated-payouts")]
-    pub fn simulated_debit(&mut self, transfer: Transfer) {
-        if self.id == transfer.id.actor {
-            match self.balance.checked_sub(transfer.amount) {
+    pub fn simulated_debit(&mut self, debit: Debit) {
+        if self.id == debit.id.actor {
+            match self.balance.checked_sub(debit.amount) {
                 Some(amount) => self.balance = amount,
                 None => panic!("overflow when subtracting!"),
             }
-            let _ = self.transfer_ids.insert(transfer.id);
-            self.debits.push(transfer);
+            self.debit_version += 1;
         } else {
             panic!(
-                "Debit transfer does not belong to this wallet({:?}): transfer: {:?}",
-                self.id, transfer
+                "Debit does not belong to this wallet({:?}): debit: {:?}",
+                self.id, debit
             )
         }
     }
@@ -156,79 +158,56 @@ mod test {
     use xor_name::XorName;
 
     #[test]
-    fn appends_credits() -> Result<()> {
+    fn applies_credits() -> Result<()> {
         // Arrange
         let balance = Money::from_nano(10);
-        let first_credit = Transfer {
-            id: Dot::new(get_random_pk(), 0),
-            to: get_random_pk(),
+        let first_credit = Credit {
+            id: Default::default(),
+            recipient: get_random_pk(),
             amount: balance,
+            msg: "asdf".to_string(),
         };
-        let mut wallet = Wallet::new(first_credit.to);
-        wallet.append(first_credit.clone())?;
-        let second_credit = Transfer {
-            id: Dot::new(get_random_pk(), 0),
-            to: first_credit.to,
+        let mut wallet = Wallet::new(first_credit.recipient);
+        wallet.apply_credit(first_credit.clone())?;
+        let second_credit = Credit {
+            id: Default::default(),
+            recipient: first_credit.recipient,
             amount: balance,
+            msg: "asdf".to_string(),
         };
 
         // Act
-        wallet.append(second_credit.clone())?;
-        let credits = wallet.credits_since(0);
-        let debits = wallet.debits_since(0);
-        let is_sequential = wallet.is_sequential(&Transfer {
-            id: Dot::new(first_credit.to, 0),
-            to: get_random_pk(),
-            amount: balance,
-        });
+        wallet.apply_credit(second_credit.clone())?;
 
         // Assert
-        assert!(wallet.contains(&second_credit.id));
         assert_eq!(wallet.balance(), balance.checked_add(balance).unwrap());
-        assert_eq!(credits.len(), 2);
-        assert_eq!(credits[1], second_credit);
-        assert!(debits.is_empty());
         assert_eq!(wallet.next_debit(), 0);
-        assert!(is_sequential.is_ok() && is_sequential?);
         Ok(())
     }
 
     #[test]
-    fn appends_debits() -> Result<()> {
+    fn applies_debits() -> Result<()> {
         // Arrange
         let balance = Money::from_nano(10);
-        let first_credit = Transfer {
-            id: Dot::new(get_random_pk(), 0),
-            to: get_random_pk(),
+        let first_credit = Credit {
+            id: Default::default(),
+            recipient: get_random_pk(),
             amount: balance,
+            msg: "asdf".to_string(),
         };
-        let mut wallet = Wallet::new(first_credit.to);
-        wallet.append(first_credit.clone())?;
-        let first_debit = Transfer {
-            id: Dot::new(first_credit.to, 0),
-            to: get_random_pk(),
+        let mut wallet = Wallet::new(first_credit.recipient);
+        wallet.apply_credit(first_credit.clone())?;
+        let first_debit = Debit {
+            id: Dot::new(first_credit.recipient, 0),
             amount: balance,
         };
 
         // Act
-        wallet.append(first_debit.clone())?;
-        let credits = wallet.credits_since(0);
-        let debits = wallet.debits_since(0);
-        let is_sequential = wallet.is_sequential(&Transfer {
-            id: Dot::new(first_credit.to, 1),
-            to: get_random_pk(),
-            amount: balance,
-        });
+        wallet.apply_debit(first_debit.clone())?;
 
         // Assert
-        assert!(wallet.contains(&first_debit.id));
         assert_eq!(wallet.balance(), Money::zero());
-        assert_eq!(debits.len(), 1);
-        assert_eq!(debits[0], first_debit);
-        assert_eq!(credits.len(), 1);
-        assert_eq!(credits[0], first_credit);
         assert_eq!(wallet.next_debit(), 1);
-        assert!(is_sequential.is_ok() && is_sequential?);
         Ok(())
     }
 

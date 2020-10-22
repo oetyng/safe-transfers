@@ -6,15 +6,12 @@
 // KIND, either express or implied. Please review the Licences for the specific language governing
 // permissions and limitations relating to use of the SAFE Network Software.
 
-use crdts::Dot;
-use sn_data_types::{
-    DebitAgreementProof, Error, Money, PublicKey, Result, SignedTransfer, Transfer,
-};
+use sn_data_types::{Credit, CreditAgreementProof, Error, Money, PublicKey, Result, SignedCredit};
 use std::collections::BTreeMap;
 use threshold_crypto::{SecretKey, SecretKeySet};
 
 /// Produces a genesis balance for a new network.
-pub fn get_genesis(balance: u64, id: PublicKey) -> Result<DebitAgreementProof> {
+pub fn get_genesis(balance: u64, id: PublicKey) -> Result<CreditAgreementProof> {
     let index = 0;
     let threshold = 0;
     // Nothing comes before genesis, it is a paradox
@@ -28,45 +25,39 @@ pub fn get_genesis(balance: u64, id: PublicKey) -> Result<DebitAgreementProof> {
     let peer_replicas = bls_secret_key.public_keys();
     let secret_key = bls_secret_key.secret_key_share(index);
 
-    let transfer = Transfer {
+    let credit = Credit {
+        id: Default::default(),
         amount: Money::from_nano(balance),
-        id: Dot::new(get_random_pk(), 0),
-        to: id,
+        recipient: id,
+        msg: "genesis".to_string(),
     };
 
-    let serialised_transfer =
-        bincode::serialize(&transfer).map_err(|e| Error::NetworkOther(e.to_string()))?;
-    let transfer_sig_share = secret_key.sign(serialised_transfer);
-    let mut transfer_sig_shares = BTreeMap::new();
-    let _ = transfer_sig_shares.insert(0, transfer_sig_share);
+    let serialised_credit =
+        bincode::serialize(&credit).map_err(|e| Error::NetworkOther(e.to_string()))?;
+    let credit_sig_share = secret_key.sign(serialised_credit);
+    let mut credit_sig_shares = BTreeMap::new();
+    let _ = credit_sig_shares.insert(0, credit_sig_share);
     // Combine shares to produce the main signature.
     let actor_signature = sn_data_types::Signature::Bls(
         peer_replicas
-            .combine_signatures(&transfer_sig_shares)
+            .combine_signatures(&credit_sig_shares)
             .map_err(|e| Error::NetworkOther(e.to_string()))?,
     );
 
-    let signed_transfer = SignedTransfer {
-        transfer,
+    let signed_credit = SignedCredit {
+        credit,
         actor_signature,
     };
-
-    let serialised_transfer =
-        bincode::serialize(&signed_transfer).map_err(|e| Error::NetworkOther(e.to_string()))?;
-    let transfer_sig_share = secret_key.sign(serialised_transfer);
-    let mut transfer_sig_shares = BTreeMap::new();
-    let _ = transfer_sig_shares.insert(0, transfer_sig_share);
-    // Combine shares to produce the main signature.
     let debiting_replicas_sig = sn_data_types::Signature::Bls(
         peer_replicas
-            .combine_signatures(&transfer_sig_shares)
+            .combine_signatures(&credit_sig_shares)
             .map_err(|e| Error::NetworkOther(e.to_string()))?,
     );
 
-    Ok(DebitAgreementProof {
-        signed_transfer,
+    Ok(CreditAgreementProof {
+        signed_credit,
         debiting_replicas_sig,
-        replica_key: peer_replicas,
+        debiting_replicas_keys: peer_replicas,
     })
 }
 

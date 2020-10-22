@@ -6,12 +6,15 @@
 // KIND, either express or implied. Please review the Licences for the specific language governing
 // permissions and limitations relating to use of the SAFE Network Software.
 
-use super::{wallet::Wallet, Outcome, TernaryResult};
+use super::{
+    wallet::{Wallet, WalletSnapshot},
+    Outcome, TernaryResult,
+};
 use log::debug;
 use sn_data_types::{
-    DebitAgreementProof, Error, KnownGroupAdded, Money, PublicKey, ReplicaEvent, Result,
-    SignatureShare, SignedTransfer, Transfer, TransferPropagated, TransferRegistered,
-    TransferValidated,
+    CreditAgreementProof, Debit, Error, KnownGroupAdded, Money, PublicKey, ReplicaEvent, Result,
+    SignatureShare, SignedCredit, SignedDebit, TransferAgreementProof, TransferPropagated,
+    TransferRegistered, TransferValidated,
 };
 use std::collections::{HashMap, HashSet};
 use threshold_crypto::{PublicKeySet, PublicKeyShare, SecretKeyShare};
@@ -89,27 +92,6 @@ impl Replica {
     /// ---------------------- Queries ----------------------------------
     /// -----------------------------------------------------------------
 
-    /// Query for new credits since specified index.
-    /// NB: This is not guaranteed to give you all unknown to you,
-    /// since there is no absolute order on the credits!
-    /// Includes the credit at specified index (which may,
-    /// or may not, be the same as the one that the Actor has at the same index).
-    pub fn credits_since(&self, wallet_id: &PublicKey, index: usize) -> Option<Vec<Transfer>> {
-        match self.wallets.get(&wallet_id).cloned() {
-            None => None,
-            Some(history) => Some(history.credits_since(index)),
-        }
-    }
-
-    /// Query for new debits transfers since specified index.
-    /// Includes the debit at specified index.
-    pub fn debits_since(&self, wallet_id: &PublicKey, index: usize) -> Option<Vec<Transfer>> {
-        match self.wallets.get(&wallet_id).cloned() {
-            None => None,
-            Some(history) => Some(history.debits_since(index)),
-        }
-    }
-
     ///
     pub fn balance(&self, wallet_id: &PublicKey) -> Option<Money> {
         let result = self.wallets.get(wallet_id);
@@ -124,6 +106,12 @@ impl Replica {
         Some(self.peer_replicas.clone())
     }
 
+    ///
+    pub fn wallet(&self, wallet_id: &PublicKey) -> Option<WalletSnapshot> {
+        let wallet = self.wallets.get(wallet_id)?.to_owned();
+        Some(wallet.into())
+    }
+
     /// -----------------------------------------------------------------
     /// ---------------------- Cmds -------------------------------------
     /// -----------------------------------------------------------------
@@ -132,14 +120,14 @@ impl Replica {
     /// It is carried out by the first node in the network.
     pub fn genesis<F: FnOnce() -> Option<PublicKey>>(
         &self,
-        debit_proof: &DebitAgreementProof,
+        credit_proof: &CreditAgreementProof,
         f: F,
     ) -> Outcome<TransferPropagated> {
         // Genesis must be the first wallet.
         if !self.wallets.is_empty() {
             return Err(Error::InvalidOperation);
         }
-        self.receive_propagated(debit_proof, f)
+        self.receive_propagated(credit_proof, f)
     }
 
     /// Adds a PK set for a a new group that we learn of.
@@ -153,51 +141,71 @@ impl Replica {
     /// For now, with test money there is no from wallet.., money is created from thin air.
     pub fn test_validate_transfer(
         &self,
-        signed_transfer: SignedTransfer,
+        signed_debit: SignedDebit,
+        signed_credit: SignedCredit,
     ) -> Outcome<TransferValidated> {
-        if signed_transfer.from() == signed_transfer.to() {
-            Err(Error::from("Sending from and to the same wallet"))
+        if signed_debit.sender() == signed_credit.recipient() {
+            Err(Error::from("Sender and recipient are the same."))
+        } else if signed_credit.id() != &signed_debit.credit_id() {
+            Err(Error::from("The credit does not correspond to the debit."))
+        } else if signed_credit.amount() != signed_debit.amount() {
+            Err(Error::from("Amounts must be equal."))
         } else {
-            match self.sign_validated_transfer(&signed_transfer) {
-                Err(_) => Err(Error::InvalidSignature),
-                Ok(replica_signature) => Outcome::success(TransferValidated {
-                    signed_transfer,
-                    replica_signature,
-                    replicas: self.peer_replicas.clone(),
-                }),
-            }
+            let replica_debit_sig = match self.sign_validated_debit(&signed_debit) {
+                Err(_) => return Err(Error::InvalidSignature),
+                Ok(replica_signature) => replica_signature,
+            };
+            let replica_credit_sig = match self.sign_validated_credit(&signed_credit) {
+                Err(_) => return Err(Error::InvalidSignature),
+                Ok(replica_signature) => replica_signature,
+            };
+            Outcome::success(TransferValidated {
+                signed_debit,
+                signed_credit,
+                replica_debit_sig,
+                replica_credit_sig,
+                replicas: self.peer_replicas.clone(),
+            })
         }
     }
 
     /// Step 1. Main business logic validation of a debit.
-    pub fn validate(&self, signed_transfer: SignedTransfer) -> Outcome<TransferValidated> {
+    pub fn validate(
+        &self,
+        signed_debit: SignedDebit,
+        signed_credit: SignedCredit,
+    ) -> Outcome<TransferValidated> {
         debug!("Checking TransferValidated");
-        let transfer = &signed_transfer.transfer;
+        let debit = &signed_debit.debit;
+        let credit = &signed_credit.credit;
         // Always verify signature first! (as to not leak any information).
-        if self.verify_actor_signature(&signed_transfer).is_err() {
+        if self
+            .verify_actor_signature(&signed_debit, &signed_credit)
+            .is_err()
+        {
             return Err(Error::InvalidSignature);
-        }
-        if transfer.id.actor == transfer.to {
+        } else if debit.sender() == credit.recipient() {
             return Err(Error::from("Sender and recipient are the same."));
-        }
-
-        if transfer.amount() == Money::from_nano(0) {
+        } else if credit.id() != &debit.credit_id() {
+            return Err(Error::from("The credit does not correspond to the debit."));
+        } else if credit.amount() != debit.amount() {
+            return Err(Error::from("Amounts must be equal."));
+        } else if debit.amount() == Money::zero() {
             return Outcome::rejected(Error::Unexpected(
-                "Cannot send zero value transactions".to_string(),
+                "Transfer amount must be more than zero.".to_string(),
             ));
+        } else if !self.wallets.contains_key(&debit.sender()) {
+            return Err(Error::NoSuchSender);
         }
 
-        if !self.wallets.contains_key(&signed_transfer.from()) {
-            return Err(Error::NoSuchSender); // "{} sender does not exist (trying to transfer {} to {})."
-        }
-        match self.pending_debits.get(&signed_transfer.from()) {
+        match self.pending_debits.get(&debit.sender()) {
             None => {
-                if transfer.id.counter != 0 {
+                if debit.id.counter != 0 {
                     return Err(Error::from("out of order msg, actor's counter should be 0"));
                 }
             }
             Some(value) => {
-                if transfer.id.counter != (value + 1) {
+                if debit.id.counter != (value + 1) {
                     return Err(Error::from(format!(
                         "out of order msg, previous count: {:?}",
                         value
@@ -205,79 +213,83 @@ impl Replica {
                 }
             }
         }
-        match self.balance(&signed_transfer.from()) {
+        match self.balance(&debit.sender()) {
             Some(balance) => {
-                if transfer.amount > balance {
-                    return Err(Error::InsufficientBalance); // "{} does not have enough money to transfer {} to {}. (balance: {})"
+                if debit.amount() > balance {
+                    return Err(Error::InsufficientBalance);
                 }
             }
-            None => return Err(Error::NoSuchSender), //"From wallet doesn't exist"
+            None => return Err(Error::NoSuchSender),
         }
 
-        match self.sign_validated_transfer(&signed_transfer) {
-            Err(_) => Err(Error::InvalidSignature),
-            Ok(replica_signature) => Outcome::success(TransferValidated {
-                signed_transfer,
-                replica_signature,
-                replicas: self.peer_replicas.clone(),
-            }),
-        }
+        let replica_debit_sig = match self.sign_validated_debit(&signed_debit) {
+            Err(_) => return Err(Error::InvalidSignature),
+            Ok(replica_signature) => replica_signature,
+        };
+        let replica_credit_sig = match self.sign_validated_credit(&signed_credit) {
+            Err(_) => return Err(Error::InvalidSignature),
+            Ok(replica_signature) => replica_signature,
+        };
+        Outcome::success(TransferValidated {
+            signed_debit,
+            signed_credit,
+            replica_debit_sig,
+            replica_credit_sig,
+            replicas: self.peer_replicas.clone(),
+        })
     }
 
     /// Step 2. Validation of agreement, and order at debit source.
     pub fn register<F: FnOnce() -> bool>(
         &self,
-        debit_proof: &DebitAgreementProof,
+        transfer_proof: &TransferAgreementProof,
         f: F,
     ) -> Outcome<TransferRegistered> {
         debug!("Checking registered transfer");
 
         // Always verify signature first! (as to not leak any information).
-        if self.verify_registered_proof(debit_proof, f).is_err() {
+        if self.verify_registered_proof(transfer_proof, f).is_err() {
             return Err(Error::InvalidSignature);
         }
 
-        let transfer = &debit_proof.signed_transfer.transfer;
-        let sender = self.wallets.get(&debit_proof.from());
+        let debit = &transfer_proof.signed_debit.debit;
+        let sender = self.wallets.get(&transfer_proof.sender());
         match sender {
             None => Err(Error::NoSuchSender),
-            Some(history) => match history.is_sequential(transfer) {
-                Ok(is_sequential) => {
-                    if is_sequential {
-                        Outcome::success(TransferRegistered {
-                            debit_proof: debit_proof.clone(),
-                        })
-                    } else {
-                        Err(Error::from("Non-sequential operation"))
-                    }
+            Some(history) => {
+                if history.next_debit() == debit.id().counter {
+                    Outcome::success(TransferRegistered {
+                        transfer_proof: transfer_proof.clone(),
+                    })
+                } else {
+                    Err(Error::InvalidOperation) // from this place this code won't happen, but history validates the transfer is actually debits from it's owner.
                 }
-                Err(_) => Err(Error::InvalidOperation), // from this place this code won't happen, but history validates the transfer is actually debits from it's owner.
-            },
+            }
         }
     }
 
-    /// Step 3. Validation of DebitAgreementProof, and credit idempotency at credit destination.
+    /// Step 3. Validation of TransferAgreementProof, and credit idempotency at credit destination.
     /// (Since this leads to a credit, there is no requirement on order.)
     pub fn receive_propagated<F: FnOnce() -> Option<PublicKey>>(
         &self,
-        debit_proof: &DebitAgreementProof,
+        credit_proof: &CreditAgreementProof,
         f: F,
     ) -> Outcome<TransferPropagated> {
         // Always verify signature first! (as to not leak any information).
-        let debiting_replicas = self.verify_propagated_proof(debit_proof, f)?;
-        let already_exists = match self.wallets.get(&debit_proof.to()) {
+        let debiting_replicas = self.verify_propagated_proof(credit_proof, f)?;
+        let already_exists = match self.wallets.get(&credit_proof.recipient()) {
             None => false,
-            Some(history) => history.contains(&debit_proof.id()),
+            Some(history) => history.contains(&credit_proof.id()),
         };
         if already_exists {
             Outcome::no_change()
         } else {
-            match self.sign_proof(&debit_proof) {
+            match self.sign_credit_proof(&credit_proof) {
                 Err(_) => Err(Error::InvalidSignature),
                 Ok(crediting_replica_sig) => Outcome::success(TransferPropagated {
-                    debit_proof: debit_proof.clone(),
-                    debiting_replicas,
+                    credit_proof: credit_proof.clone(),
                     crediting_replica_sig,
+                    crediting_replica_keys: PublicKey::Bls(self.peer_replicas.public_key()),
                 }),
             }
         }
@@ -298,29 +310,30 @@ impl Replica {
                 Ok(())
             }
             ReplicaEvent::TransferValidated(e) => {
-                let transfer = e.signed_transfer.transfer;
-                let _ = self
-                    .pending_debits
-                    .insert(transfer.id.actor, transfer.id.counter);
+                let debit = e.signed_debit.debit;
+                let _ = self.pending_debits.insert(debit.id.actor, debit.id.counter);
                 Ok(())
             }
             ReplicaEvent::TransferRegistered(e) => {
-                let transfer = e.debit_proof.signed_transfer.transfer;
-                match self.wallets.get_mut(&transfer.id.actor) {
+                let debit = e.transfer_proof.signed_debit.debit;
+                match self.wallets.get_mut(&debit.id.actor) {
                     None => return Err(Error::from("")),
-                    Some(wallet) => wallet.append(transfer)?,
+                    Some(wallet) => wallet.apply_debit(Debit {
+                        id: debit.id(),
+                        amount: debit.amount(),
+                    })?,
                 }
                 Ok(())
             }
             ReplicaEvent::TransferPropagated(e) => {
-                let transfer = e.debit_proof.signed_transfer.transfer;
-                match self.wallets.get_mut(&transfer.to) {
-                    Some(wallet) => wallet.append(transfer)?,
+                let credit = e.credit_proof.signed_credit.credit;
+                match self.wallets.get_mut(&credit.recipient()) {
+                    Some(wallet) => wallet.apply_credit(credit)?,
                     None => {
                         // Creates if not exists.
-                        let mut wallet = Wallet::new(transfer.to);
-                        wallet.append(transfer.clone())?;
-                        let _ = self.wallets.insert(transfer.to, wallet);
+                        let mut wallet = Wallet::new(credit.recipient());
+                        wallet.apply_credit(credit.clone())?;
+                        let _ = self.wallets.insert(credit.recipient(), wallet);
                     }
                 };
                 Ok(())
@@ -359,9 +372,20 @@ impl Replica {
     /// -----------------------------------------------------------------
 
     ///
-    fn sign_validated_transfer(&self, transfer: &SignedTransfer) -> Result<SignatureShare> {
-        match bincode::serialize(transfer) {
-            Err(_) => Err(Error::NetworkOther("Could not serialise transfer".into())),
+    fn sign_validated_debit(&self, debit: &SignedDebit) -> Result<SignatureShare> {
+        match bincode::serialize(debit) {
+            Err(_) => Err(Error::NetworkOther("Could not serialise debit".into())),
+            Ok(data) => Ok(SignatureShare {
+                index: self.key_index,
+                share: self.secret_key.sign(data),
+            }),
+        }
+    }
+
+    ///
+    fn sign_validated_credit(&self, credit: &SignedCredit) -> Result<SignatureShare> {
+        match bincode::serialize(credit) {
+            Err(_) => Err(Error::NetworkOther("Could not serialise credit".into())),
             Ok(data) => Ok(SignatureShare {
                 index: self.key_index,
                 share: self.secret_key.sign(data),
@@ -372,7 +396,17 @@ impl Replica {
     /// Replicas of the credited wallet, sign the debit proof
     /// for the Actor to aggregate and verify locally.
     /// An alternative to this is to have the Actor know (and trust) all other Replica groups.
-    fn sign_proof(&self, proof: &DebitAgreementProof) -> Result<SignatureShare> {
+    fn sign_debit_proof(&self, proof: &TransferAgreementProof) -> Result<SignatureShare> {
+        match bincode::serialize(proof) {
+            Err(_) => Err(Error::NetworkOther("Could not serialise proof".into())),
+            Ok(data) => Ok(SignatureShare {
+                index: self.key_index,
+                share: self.secret_key.sign(data),
+            }),
+        }
+    }
+
+    fn sign_credit_proof(&self, proof: &CreditAgreementProof) -> Result<SignatureShare> {
         match bincode::serialize(proof) {
             Err(_) => Err(Error::NetworkOther("Could not serialise proof".into())),
             Ok(data) => Ok(SignatureShare {
@@ -383,59 +417,83 @@ impl Replica {
     }
 
     ///
-    fn verify_actor_signature(&self, signed_transfer: &SignedTransfer) -> Result<()> {
-        match bincode::serialize(&signed_transfer.transfer) {
-            Err(_) => Err(Error::NetworkOther("Could not serialise transfer".into())),
-            Ok(data) => {
-                let actor_sig = signed_transfer
-                    .from()
-                    .verify(&signed_transfer.actor_signature, data);
-                if actor_sig.is_ok() {
-                    Ok(())
-                } else {
-                    Err(Error::InvalidSignature)
-                }
-            }
+    fn verify_actor_signature(
+        &self,
+        signed_debit: &SignedDebit,
+        signed_credit: &SignedCredit,
+    ) -> Result<()> {
+        let debit = &signed_debit.debit;
+        let credit = &signed_credit.credit;
+        let debit_bytes = match bincode::serialize(&debit) {
+            Err(_) => return Err(Error::NetworkOther("Could not serialise debit".into())),
+            Ok(bytes) => bytes,
+        };
+        let credit_bytes = match bincode::serialize(&credit) {
+            Err(_) => return Err(Error::NetworkOther("Could not serialise credit".into())),
+            Ok(bytes) => bytes,
+        };
+        let valid_debit = signed_debit
+            .sender()
+            .verify(&signed_debit.actor_signature, debit_bytes)
+            .is_ok();
+        let valid_credit = signed_debit
+            .sender()
+            .verify(&signed_debit.actor_signature, credit_bytes)
+            .is_ok();
+
+        if valid_debit && valid_credit && credit.id() == &debit.credit_id() {
+            Ok(())
+        } else {
+            Err(Error::InvalidSignature)
         }
     }
 
     /// Verify that this is a valid _registered_
-    /// DebitAgreementProof, i.e. signed by our peers.
+    /// TransferAgreementProof, i.e. signed by our peers.
     fn verify_registered_proof<F: FnOnce() -> bool>(
         &self,
-        proof: &DebitAgreementProof,
+        proof: &TransferAgreementProof,
         f: F,
     ) -> Result<()> {
-        // Check that the proof corresponds to a public key set of our peers.
-        match bincode::serialize(&proof.signed_transfer) {
-            Err(_) => Err(Error::NetworkOther("Could not serialise transfer".into())),
-            Ok(data) => {
-                // Check if proof is signed by our peers.
-                let public_key = sn_data_types::PublicKey::Bls(self.peer_replicas.public_key());
-                let result = public_key.verify(&proof.debiting_replicas_sig, &data);
-                if result.is_ok() {
-                    return result;
-                }
-                // Check if proof is signed with an older key
-                if f() {
-                    return result;
-                }
-
-                // If it's not signed with our peers' public key, we won't consider it valid.
-                Err(Error::InvalidSignature)
-            }
+        if proof.signed_credit.id() != &proof.signed_debit.credit_id() {
+            return Err(Error::NetworkOther(
+                "Credit does not correspond with the debit.".into(),
+            ));
         }
+        // Check that the proof corresponds to a public key set of our peers.
+        let debit_bytes = match bincode::serialize(&proof.signed_debit) {
+            Ok(bytes) => bytes,
+            Err(_) => return Err(Error::NetworkOther("Could not serialise transfer".into())),
+        };
+        let credit_bytes = match bincode::serialize(&proof.signed_credit) {
+            Ok(bytes) => bytes,
+            Err(_) => return Err(Error::NetworkOther("Could not serialise transfer".into())),
+        };
+        // Check if proof is signed by our peers.
+        let public_key = sn_data_types::PublicKey::Bls(self.peer_replicas.public_key());
+        let valid_debit = public_key.verify(&proof.debit_sig, &debit_bytes).is_ok();
+        let valid_credit = public_key.verify(&proof.credit_sig, &credit_bytes).is_ok();
+        if valid_debit && valid_credit {
+            return Ok(());
+        }
+        // Check if proof is signed with an older key
+        if f() {
+            return Ok(());
+        }
+
+        // If it's not signed with our peers' public key, we won't consider it valid.
+        Err(Error::InvalidSignature)
     }
 
     /// Verify that this is a valid _propagated_
-    /// DebitAgreementProof, i.e. signed by a group that we know of.
+    /// TransferAgreementProof, i.e. signed by a group that we know of.
     fn verify_propagated_proof<F: FnOnce() -> Option<PublicKey>>(
         &self,
-        proof: &DebitAgreementProof,
+        proof: &CreditAgreementProof,
         f: F,
     ) -> Result<PublicKey> {
         // Check that the proof corresponds to a public key set of some Replicas.
-        match bincode::serialize(&proof.signed_transfer) {
+        match bincode::serialize(&proof.signed_credit) {
             Err(_) => Err(Error::NetworkOther("Could not serialise transfer".into())),
             Ok(data) => {
                 // Check if it is from our group.
