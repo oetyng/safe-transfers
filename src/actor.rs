@@ -7,16 +7,14 @@
 // permissions and limitations relating to use of the SAFE Network Software.
 
 use super::{
-    wallet::Wallet, ActorEvent, Outcome, ReceivedCredit, ReplicaValidator, TernaryResult,
-    TransferInitiated, TransferRegistrationSent, TransferValidated, TransferValidationReceived,
-    TransfersSynched,
+    wallet::Wallet, ActorEvent, Outcome, ReplicaValidator, TernaryResult, TransferInitiated,
+    TransferRegistrationSent, TransferValidated, TransferValidationReceived, TransfersSynched,
 };
 use crdts::Dot;
-use itertools::Itertools;
-use log::{debug, warn};
+use log::debug;
 use sn_data_types::{
-    Credit, CreditId, Debit, DebitId, Error, Keypair, Money, PublicKey, ReplicaEvent, Result,
-    Signature, SignatureShare, SignedCredit, SignedDebit, Transfer, TransferAgreementProof,
+    Credit, CreditId, Debit, DebitId, Error, Keypair, Money, PublicKey, Result, SignatureShare,
+    SignedCredit, SignedDebit, TransferAgreementProof,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use threshold_crypto::PublicKeySet;
@@ -313,6 +311,7 @@ impl<V: ReplicaValidator> Actor<V> {
         debit_version: u64,
         credit_ids: HashSet<CreditId>,
     ) -> Outcome<TransfersSynched> {
+        // todo: use WalletSnapshot, aggregate sigs
         Outcome::success(TransfersSynched {
             id: self.id,
             balance,
@@ -370,13 +369,6 @@ impl<V: ReplicaValidator> Actor<V> {
     /// -----------------------------------------------------------------
     /// ---------------------- Private methods --------------------------
     /// -----------------------------------------------------------------
-
-    fn sign(&self, transfer: &Transfer) -> Result<Signature> {
-        match bincode::serialize(transfer) {
-            Err(_) => Err(Error::NetworkOther("Could not serialise transfer".into())),
-            Ok(data) => Ok(self.keypair.sign(&data)),
-        }
-    }
 
     /// We verify that we signed the underlying cmd,
     /// and the replica signature against the pk set included in the event.
@@ -463,22 +455,22 @@ impl<V: ReplicaValidator> Actor<V> {
         }
     }
 
-    /// Verify that this is a valid ReceivedCredit.
-    #[cfg(not(feature = "simulated-payouts"))]
-    fn verify_credit_proof(&self, credit: &ReceivedCredit) -> Result<()> {
-        if !self.replica_validator.is_valid(credit.debiting_replicas) {
-            return Err(Error::InvalidSignature);
-        }
-        let proof = &credit.credit_proof;
+    // /// Verify that this is a valid ReceivedCredit.
+    // #[cfg(not(feature = "simulated-payouts"))]
+    // fn verify_credit_proof(&self, credit: &ReceivedCredit) -> Result<()> {
+    //     if !self.replica_validator.is_valid(credit.debiting_replicas) {
+    //         return Err(Error::InvalidSignature);
+    //     }
+    //     let proof = &credit.credit_proof;
 
-        // Check that the proof corresponds to a/the public key set of our Replicas.
-        match bincode::serialize(&proof.signed_credit) {
-            Err(_) => Err(Error::NetworkOther("Could not serialise credit".into())),
-            Ok(data) => credit
-                .debiting_replicas
-                .verify(&proof.debiting_replicas_sig, &data),
-        }
-    }
+    //     // Check that the proof corresponds to a/the public key set of our Replicas.
+    //     match bincode::serialize(&proof.signed_credit) {
+    //         Err(_) => Err(Error::NetworkOther("Could not serialise credit".into())),
+    //         Ok(data) => credit
+    //             .debiting_replicas
+    //             .verify(&proof.debiting_replicas_sig, &data),
+    //     }
+    // }
 
     /// Check that we signed this.
     fn verify_is_our_transfer(
@@ -656,7 +648,6 @@ mod test {
         sk_set: &SecretKeySet,
     ) -> Result<Vec<TransferValidated>> {
         let signed_debit = transfer.signed_debit;
-        let serialized_signed_debit = try_serialize(&signed_debit)?;
         let signed_credit = transfer.signed_credit;
         let serialized_signed_debit = try_serialize(&signed_debit)?;
         let serialized_signed_credit = try_serialize(&signed_credit)?;
@@ -705,7 +696,6 @@ mod test {
         sk_set: &SecretKeySet,
     ) -> Result<TransferRegistrationSent> {
         let signed_debit = transfer.signed_debit;
-        let serialized_signed_debit = try_serialize(&signed_debit)?;
         let signed_credit = transfer.signed_credit;
         let serialized_signed_debit = try_serialize(&signed_debit)?;
         let serialized_signed_credit = try_serialize(&signed_credit)?;

@@ -8,7 +8,7 @@
 
 use sn_data_types::{Credit, CreditAgreementProof, Error, Money, PublicKey, Result, SignedCredit};
 use std::collections::BTreeMap;
-use threshold_crypto::{SecretKey, SecretKeySet};
+use threshold_crypto::SecretKeySet;
 
 /// Produces a genesis balance for a new network.
 pub fn get_genesis(balance: u64, id: PublicKey) -> Result<CreditAgreementProof> {
@@ -59,8 +59,4 @@ pub fn get_genesis(balance: u64, id: PublicKey) -> Result<CreditAgreementProof> 
         debiting_replicas_sig,
         debiting_replicas_keys: peer_replicas,
     })
-}
-
-fn get_random_pk() -> PublicKey {
-    PublicKey::from(SecretKey::random().public_key())
 }

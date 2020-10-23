@@ -178,35 +178,37 @@ impl Replica {
         debug!("Checking TransferValidated");
         let debit = &signed_debit.debit;
         let credit = &signed_credit.credit;
+
         // Always verify signature first! (as to not leak any information).
         if self
             .verify_actor_signature(&signed_debit, &signed_credit)
             .is_err()
         {
-            return Err(Error::InvalidSignature);
+            return Outcome::rejected(Error::InvalidSignature);
         } else if debit.sender() == credit.recipient() {
-            return Err(Error::from("Sender and recipient are the same."));
+            return Outcome::rejected(Error::from("Sender and recipient are the same."));
         } else if credit.id() != &debit.credit_id() {
-            return Err(Error::from("The credit does not correspond to the debit."));
+            return Outcome::rejected(Error::from("The credit does not correspond to the debit."));
         } else if credit.amount() != debit.amount() {
-            return Err(Error::from("Amounts must be equal."));
+            return Outcome::rejected(Error::from("Amounts must be equal."));
         } else if debit.amount() == Money::zero() {
             return Outcome::rejected(Error::Unexpected(
                 "Transfer amount must be more than zero.".to_string(),
             ));
         } else if !self.wallets.contains_key(&debit.sender()) {
-            return Err(Error::NoSuchSender);
+            return Outcome::rejected(Error::NoSuchSender);
         }
-
         match self.pending_debits.get(&debit.sender()) {
             None => {
                 if debit.id.counter != 0 {
-                    return Err(Error::from("out of order msg, actor's counter should be 0"));
+                    return Outcome::rejected(Error::from(
+                        "out of order msg, actor's counter should be 0",
+                    ));
                 }
             }
             Some(value) => {
                 if debit.id.counter != (value + 1) {
-                    return Err(Error::from(format!(
+                    return Outcome::rejected(Error::from(format!(
                         "out of order msg, previous count: {:?}",
                         value
                     )));
@@ -216,20 +218,21 @@ impl Replica {
         match self.balance(&debit.sender()) {
             Some(balance) => {
                 if debit.amount() > balance {
-                    return Err(Error::InsufficientBalance);
+                    return Outcome::rejected(Error::InsufficientBalance);
                 }
             }
-            None => return Err(Error::NoSuchSender),
+            None => return Outcome::rejected(Error::NoSuchSender),
         }
 
         let replica_debit_sig = match self.sign_validated_debit(&signed_debit) {
-            Err(_) => return Err(Error::InvalidSignature),
+            Err(_) => return Outcome::rejected(Error::InvalidSignature),
             Ok(replica_signature) => replica_signature,
         };
         let replica_credit_sig = match self.sign_validated_credit(&signed_credit) {
-            Err(_) => return Err(Error::InvalidSignature),
+            Err(_) => return Outcome::rejected(Error::InvalidSignature),
             Ok(replica_signature) => replica_signature,
         };
+
         Outcome::success(TransferValidated {
             signed_debit,
             signed_credit,
@@ -249,20 +252,20 @@ impl Replica {
 
         // Always verify signature first! (as to not leak any information).
         if self.verify_registered_proof(transfer_proof, f).is_err() {
-            return Err(Error::InvalidSignature);
+            return Outcome::rejected(Error::InvalidSignature);
         }
 
         let debit = &transfer_proof.signed_debit.debit;
         let sender = self.wallets.get(&transfer_proof.sender());
         match sender {
-            None => Err(Error::NoSuchSender),
+            None => Outcome::rejected(Error::NoSuchSender),
             Some(history) => {
                 if history.next_debit() == debit.id().counter {
                     Outcome::success(TransferRegistered {
                         transfer_proof: transfer_proof.clone(),
                     })
                 } else {
-                    Err(Error::InvalidOperation) // from this place this code won't happen, but history validates the transfer is actually debits from it's owner.
+                    Outcome::rejected(Error::InvalidOperation) // from this place this code won't happen, but history validates the transfer is actually debits from it's owner.
                 }
             }
         }
@@ -276,7 +279,7 @@ impl Replica {
         f: F,
     ) -> Outcome<TransferPropagated> {
         // Always verify signature first! (as to not leak any information).
-        let debiting_replicas = self.verify_propagated_proof(credit_proof, f)?;
+        let _debiting_replicas = self.verify_propagated_proof(credit_proof, f)?;
         let already_exists = match self.wallets.get(&credit_proof.recipient()) {
             None => false,
             Some(history) => history.contains(&credit_proof.id()),
@@ -285,7 +288,7 @@ impl Replica {
             Outcome::no_change()
         } else {
             match self.sign_credit_proof(&credit_proof) {
-                Err(_) => Err(Error::InvalidSignature),
+                Err(_) => Outcome::rejected(Error::InvalidSignature),
                 Ok(crediting_replica_sig) => Outcome::success(TransferPropagated {
                     credit_proof: credit_proof.clone(),
                     crediting_replica_sig,
@@ -386,19 +389,6 @@ impl Replica {
     fn sign_validated_credit(&self, credit: &SignedCredit) -> Result<SignatureShare> {
         match bincode::serialize(credit) {
             Err(_) => Err(Error::NetworkOther("Could not serialise credit".into())),
-            Ok(data) => Ok(SignatureShare {
-                index: self.key_index,
-                share: self.secret_key.sign(data),
-            }),
-        }
-    }
-
-    /// Replicas of the credited wallet, sign the debit proof
-    /// for the Actor to aggregate and verify locally.
-    /// An alternative to this is to have the Actor know (and trust) all other Replica groups.
-    fn sign_debit_proof(&self, proof: &TransferAgreementProof) -> Result<SignatureShare> {
-        match bincode::serialize(proof) {
-            Err(_) => Err(Error::NetworkOther("Could not serialise proof".into())),
             Ok(data) => Ok(SignatureShare {
                 index: self.key_index,
                 share: self.secret_key.sign(data),

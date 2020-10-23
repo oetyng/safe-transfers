@@ -21,7 +21,7 @@ impl Into<WalletSnapshot> for Wallet {
         WalletSnapshot {
             balance: self.balance,
             debit_version: self.debit_version,
-            credit_ids: self.credit_ids.clone(),
+            credit_ids: self.credit_ids,
         }
     }
 }
