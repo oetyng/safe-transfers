@@ -29,6 +29,7 @@ mod actor;
 mod genesis;
 mod replica;
 mod wallet;
+//mod test_file;
 
 pub use self::{
     actor::Actor as TransferActor, genesis::get_genesis, replica::Replica as TransferReplica,
@@ -125,7 +126,7 @@ pub enum ActorEvent {
 /// f.ex. credits that its Replicas were holding upon
 /// the propagation of them from a remote group of Replicas,
 /// or unknown debits that its Replicas were holding
-/// upon the registration of them from another
+/// upon the reginetworkion of them from another
 /// instance of the same Actor.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize, Debug)]
 pub struct TransfersSynched {
@@ -175,13 +176,17 @@ pub struct TransferRegistrationSent {
 #[allow(unused)]
 mod test {
     use crate::{
-        actor::Actor, genesis, replica::Replica, ActorEvent, ReplicaEvent, ReplicaValidator,
-        TransferInitiated, Wallet,
+        actor::Actor, genesis, replica::Replica, wallet::WalletSnapshot, ActorEvent, ReplicaEvent,
+        ReplicaValidator, SignedCredit, SignedDebit, TransferInitiated, Wallet,
     };
     use crdts::{
         quickcheck::{quickcheck, TestResult},
         Dot,
     };
+    use prop::test_runner::*;
+    use proptest::prelude::*;
+    use rand::RngCore;
+    use rand::{Rng, SeedableRng};
     use sn_data_types::{
         Credit, CreditAgreementProof, CreditId, Debit, Keypair, Money, PublicKey, Result, Transfer,
         TransferAgreementProof,
@@ -202,228 +207,170 @@ mod test {
     // ------------------------------------------------------------------------
 
     #[test]
-    fn basic_transfer() {
-        let _ = transfer_between_actors(100, 10, 2, 3, 0, 1);
-    }
-
-    // #[test]
-    // fn reproduce_quickcheck_basic_transfer() {
-    //     let _ = transfer_between_actors(1, 0, 2, 4, 0, 1);
-    // }
-
-    // #[allow(trivial_casts)]
-    // #[test]
-    // fn quickcheck_basic_transfer() {
-    //     quickcheck(transfer_between_actors as fn(u64, u64, u8, u8, u8, u8) -> TestResult);
-    // }
-
-    // ------------------------------------------------------------------------
-    // ------------------------ Genesis --------------------------------
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn can_start_with_genesis() -> Result<()> {
-        let credit_proof = get_genesis()?;
-        let keys = setup_replica_group_keys(1, 3);
-        let mut groups = setup_replica_groups(keys, vec![]);
-        let previous_key = Some(PublicKey::Bls(credit_proof.replica_keys().public_key()));
-        for replica in &mut groups.remove(0).replicas {
-            let result = replica.genesis(&credit_proof, || previous_key)?.unwrap();
-            replica.apply(ReplicaEvent::TransferPropagated(result))?;
-            let balance = replica.balance(&credit_proof.recipient()).unwrap();
-            println!("Balance: {}", balance);
-            assert_eq!(credit_proof.amount(), balance);
+    fn single_wallet_test() {
+        let seed = 3;
+        let num_transfers = 20;
+        let replica_count = 7;
+        let mut wallet_configs = HashMap::new();
+        for i in 0..1 {
+            let actors = vec![500, 400, 300, 200, 100];
+            let _ = wallet_configs.insert(i, actors);
         }
-        Ok(())
+        let mut network = get_network(seed, replica_count, wallet_configs);
+        run_debit(num_transfers, &mut network);
+        output(&mut network);
+        verify(&mut network);
     }
 
-    #[test]
-    fn genesis_can_only_be_the_first() -> Result<()> {
-        let debit_proof = get_genesis()?;
-        let wallet_configs = hashmap![0 => 10];
-        let mut groups = get_network(1, 3, wallet_configs).0;
-        let previous_key = Some(PublicKey::Bls(debit_proof.replica_keys().public_key()));
-        for replica in &mut groups.remove(0).replicas {
-            let result = replica.genesis(&debit_proof, || previous_key);
-            assert_eq!(result.is_err(), true);
-        }
-        Ok(())
-    }
-
-    // ------------------------------------------------------------------------
-    // ------------------------ Basic Transfer Body ---------------------------
-    // ------------------------------------------------------------------------
-
-    fn transfer_between_actors(
-        sender_balance: u64,
-        recipient_balance: u64,
-        group_count: u8,
-        replica_count: u8,
-        sender_index: u8,
-        recipient_index: u8,
-    ) -> TestResult {
-        match basic_transfer_between_actors(
-            sender_balance,
-            recipient_balance,
-            group_count,
-            replica_count,
-            sender_index,
-            recipient_index,
-        ) {
-            Ok(Some(_)) => TestResult::passed(),
-            Ok(None) => TestResult::discard(),
-            Err(_) => TestResult::failed(),
-        }
-    }
-
-    fn basic_transfer_between_actors(
-        sender_balance: u64,
-        recipient_balance: u64,
-        group_count: u8,
-        replica_count: u8,
-        sender_index: u8,
-        recipient_index: u8,
-    ) -> Result<Option<()>> {
-        // --- Filter ---
-        if 0 == sender_balance
-            || 0 == group_count
-            || 2 >= replica_count
-            || sender_index >= group_count
-            || recipient_index >= group_count
-            || sender_index == recipient_index
-        {
-            return Ok(None);
-        }
-
-        // --- Arrange ---
-        let recipient_final = sender_balance + recipient_balance;
-        let wallet_configs =
-            hashmap![sender_index => sender_balance, recipient_index => recipient_balance];
-        let (_, mut actors) = get_network(group_count, replica_count, wallet_configs);
-        let mut sender = actors.remove(&sender_index).unwrap();
-        let mut recipient = actors.remove(&recipient_index).unwrap();
-
-        // --- Act ---
-        // 1. Init transfer at Sender Actor.
-        let transfer = init_transfer(&mut sender, recipient.actor.id())?;
-        // 2. Validate at Sender Replicas.
-        let debit_proof = validate_at_sender_replicas(transfer, &mut sender)?.unwrap();
-        // 3. Register at Sender Replicas.
-        register_at_debiting_replicas(&debit_proof, &mut sender.replica_group)?;
-        // 4. Propagate to Recipient Replicas.
-        let events = propagate_to_crediting_replicas(
-            debit_proof.credit_proof(),
-            &mut recipient.replica_group,
-        );
-        // 5. Synch at Recipient Actor.
-        synch(&mut recipient)?;
-
-        // --- Assert ---
-        // Actor and Replicas have the correct balance.
-        assert_balance(sender, Money::zero());
-        assert_balance(recipient, Money::from_nano(recipient_final));
-        Ok(Some(()))
-    }
-
-    fn assert_balance(actor: TestActor, amount: Money) {
-        assert!(actor.actor.balance() == amount);
-        actor
-            .replica_group
-            .replicas
-            .iter()
-            .map(|replica| replica.balance(&actor.actor.id()).unwrap())
-            .for_each(|balance| assert!(balance == amount));
-    }
-
-    // ------------------------------------------------------------------------
-    // ------------------------ AT2 Steps -------------------------------------
-    // ------------------------------------------------------------------------
-
-    // 1. Init debit at Sender Actor.
-    fn init_transfer(sender: &mut TestActor, to: PublicKey) -> Result<TransferInitiated> {
-        let transfer = sender
-            .actor
-            .transfer(sender.actor.balance(), to, "asdf".to_string())?
-            .unwrap();
-
-        sender
-            .actor
-            .apply(ActorEvent::TransferInitiated(transfer.clone()))?;
-
-        Ok(transfer)
-    }
-
-    // 2. Validate debit at Sender Replicas.
-    fn validate_at_sender_replicas(
-        transfer: TransferInitiated,
-        sender: &mut TestActor,
-    ) -> Result<Option<TransferAgreementProof>> {
-        for replica in &mut sender.replica_group.replicas {
-            let validated = replica
-                .validate(
-                    transfer.signed_debit.clone(),
-                    transfer.signed_credit.clone(),
-                )?
-                .unwrap();
-            replica.apply(ReplicaEvent::TransferValidated(validated.clone()))?;
-            let validation_received = sender.actor.receive(validated)?.unwrap();
-            sender.actor.apply(ActorEvent::TransferValidationReceived(
-                validation_received.clone(),
-            ))?;
-            if let Some(proof) = validation_received.proof {
-                let registered = sender.actor.register(proof.clone())?.unwrap();
-                sender
-                    .actor
-                    .apply(ActorEvent::TransferRegistrationSent(registered))?;
-                return Ok(Some(proof));
+    fn output(network: &mut Network) {
+        for group in &mut network.replica_groups {
+            println!("Replica group: {}", group.index);
+            for replica in &group.replicas {
+                for actor in &network.actors {
+                    if let Some(balance) = replica.balance(&actor.id()) {
+                        println!("Replica balance of actor {}: {}", actor.id(), balance.as_nano());
+                    }
+                }
             }
         }
-        Ok(None)
-    }
 
-    // 3. Register debit at Sender Replicas.
-    fn register_at_debiting_replicas(
-        debit_proof: &TransferAgreementProof,
-        replica_group: &mut ReplicaGroup,
-    ) -> Result<()> {
-        for replica in &mut replica_group.replicas {
-            let registered = replica.register(debit_proof, || true)?.unwrap();
-            replica.apply(ReplicaEvent::TransferRegistered(registered))?;
+        for actor in &network.actors {
+            println!(
+                "Balance of actor {}: {}",
+                actor.id(),
+                actor.balance().as_nano()
+            );
         }
-        Ok(())
     }
 
-    // 4. Propagate credit to Recipient Replicas.
-    fn propagate_to_crediting_replicas(
-        credit_proof: CreditAgreementProof,
-        replica_group: &mut ReplicaGroup,
-    ) -> Vec<ReplicaEvent> {
-        replica_group
-            .replicas
-            .iter_mut()
-            .map(|replica| {
-                let propagated = replica.receive_propagated(&credit_proof, || None)?.unwrap();
-                replica.apply(ReplicaEvent::TransferPropagated(propagated.clone()))?;
-                Ok(ReplicaEvent::TransferPropagated(propagated))
-            })
-            .filter_map(|c: Result<ReplicaEvent>| match c {
-                Ok(c) => Some(c),
-                _ => None,
-            })
-            .collect()
+    // #[test]
+    // fn basic_transfer() {
+    //     let _ = transfer_between_actors(100, 10, 2, 3, 0, 1);
+    // }
+
+    // --------------------------------------------------------
+    //   ----------------- Prop test ------------------------
+    // --------------------------------------------------------
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 1,
+            max_local_rejects: u32::MAX,
+            verbose: 2,
+            fork: false,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn basic(seed: u64, system: Vec<Vec<u64>>) { // Vec<Vec<u64>> -> ReplicaGroups, Actors and their balances
+            //return Err(TestCaseError::Fail("Reason".into()));
+            //return Err(TestCaseError::Reject("Reason".into()));
+            let seed = 3;
+            let max_sections = 1;
+            let max_actors_in_section = 5;
+            //prop_assume!(max_sections >= system.len());
+
+            let replica_count = 7;
+            let mut wallet_configs = HashMap::new();
+            let mut system = system;
+            for i in 0..1 { //system.len() {
+                let actors = vec![500, 400, 300, 200, 100]; // system.remove(0);
+                //prop_assume!(max_actors_in_section >= actors.len());
+                let _ = wallet_configs.insert(i, actors);
+            }
+            let mut network = get_network(seed, replica_count, wallet_configs);
+            let num_transfers = 20;//network.rng.gen_range(max_actors_in_section / 2, max_sections * max_actors_in_section);
+
+            run_debit(num_transfers as u32, &mut network);
+            verify(&mut network);
+        }
     }
 
-    // 5. Synch at Recipient Actor.
-    fn synch(recipient: &mut TestActor) -> Result<()> {
-        let replicas = &recipient.replica_group;
-        let wallet = replicas.replicas[0].wallet(&recipient.actor.id()).unwrap();
-        let transfers = recipient
-            .actor
-            .synch(wallet.balance, wallet.debit_version, wallet.credit_ids)?
-            .unwrap();
-        recipient
-            .actor
-            .apply(ActorEvent::TransfersSynched(transfers))
+    fn verify(network: &Network) {
+        for actor in &network.actors {
+            let amount = actor.actor.balance();
+            let group = &network.replica_groups[actor.replica_group];
+            group
+                .replicas
+                .iter()
+                .map(|replica| replica.balance(&actor.actor.id()).unwrap())
+                .for_each(|balance| assert_eq!(balance, amount));
+        }
+    }
+
+    fn run_debit(num_transfers: u32, network: &mut Network) {
+
+        for i in 0..num_transfers {
+            let sender_index = network.rng.gen_range(0, network.actors.len());
+            let recipient_index = network.rng.gen_range(0, network.actors.len());
+            let recipient_key = network.actors[recipient_index].id();
+            let mut sender = network.actors.remove(sender_index);
+            let amount = network.rng.gen_range(
+                1 + (sender.balance().as_nano() / 10),
+                sender.balance().as_nano(),
+            );
+            sender.transfer(Money::from_nano(amount), recipient_key, network);
+            let _ = network.actors.insert(sender_index, sender);
+        }
+
+        // process messages
+        loop_msg_routing(network);
+
+        // synch actors
+        synch(network);
+    }
+
+    fn synch(network: &mut Network) {
+        for actor in &mut network.actors {
+            let wallet =
+                network.replica_groups[actor.replica_group].replicas[0].wallet(&actor.id());
+            if let Some(wallet) = wallet {
+                let result =
+                    actor
+                        .actor
+                        .synch(wallet.balance, wallet.debit_version, wallet.credit_ids);
+                match result {
+                    Ok(Some(synched)) => {
+                        actor
+                            .actor
+                            .apply(ActorEvent::TransfersSynched(synched.clone()));
+                    }
+                    Err(e) => println!("{}", 0),
+                    _ => return,
+                }
+            }
+        }
+    }
+
+    fn loop_msg_routing(network: &mut Network) {
+        while !network.msg_queue.is_empty() {
+            let popped = network.msg_queue.pop_front();
+            if popped.is_none() {
+                break;
+            }
+            if let Some(next) = popped {
+                match next {
+                    Msg::Cmd { cmd, from, to } => {
+                        let mut group = network.replica_groups.remove(to);
+                        for replica in &mut group.replicas {
+                            replica.handle(cmd.clone(), from, network);
+                        }
+                        let _ = network.replica_groups.insert(to, group);
+                    }
+                    Msg::Event { event, to } => {
+                        for i in 0..network.actors.len() {
+                            if network.actors[i].id() == to {
+                                let mut actor = network.actors.remove(i);
+                                actor.handle(event, network);
+                                let _ = network.actors.insert(i, actor);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            shuffle(&mut network.msg_queue, &mut network.rng);
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -440,28 +387,76 @@ mod test {
         genesis::get_genesis(balance, id)
     }
 
+    use std::collections::VecDeque;
+    struct Network {
+        replica_groups: Vec<ReplicaGroup>,
+        actors: Vec<TestActor>,
+        msg_queue: VecDeque<Msg>,
+        rng: rand::rngs::StdRng,
+    }
+    enum Msg {
+        Cmd {
+            cmd: Cmd,
+            to: ReplicaIndex,
+            from: PublicKey,
+        },
+        Event {
+            event: ReplicaEvent,
+            to: PublicKey,
+            //from: ReplicaIndex,
+        },
+    }
+
+    #[derive(Clone)]
+    enum Cmd {
+        ValidateDebit {
+            signed_debit: SignedDebit,
+            signed_credit: SignedCredit,
+            // amount: Money,
+            // recipient: PublicKey,
+            // msg: String,
+        },
+        RegisterDebitAgreement(TransferAgreementProof),
+        PropagateTransfer(CreditAgreementProof),
+    }
+
     fn get_network(
-        group_count: u8,
+        seed: u64,
         replica_count: u8,
-        wallet_configs: HashMap<u8, u64>,
-    ) -> (Vec<ReplicaGroup>, HashMap<u8, TestActor>) {
+        wallet_configs: HashMap<usize, Vec<u64>>,
+    ) -> Network {
         let wallets: Vec<_> = wallet_configs
             .iter()
-            .map(|(index, balance)| setup_wallet(*balance, *index))
+            .map(|(replica_group, balances)| {
+                balances
+                    .iter()
+                    .map(|b| setup_wallet(*b, *replica_group))
+                    .collect::<Vec<_>>()
+            })
+            .flatten()
             .collect();
 
+        let group_count = wallet_configs.len();
         let group_keys = setup_replica_group_keys(group_count, replica_count);
         let mut replica_groups = setup_replica_groups(group_keys, wallets.clone());
 
-        let actors: HashMap<_, _> = wallets
+        let actors = wallets
             .iter()
-            .map(|a| (a.replica_group, setup_actor(a.clone(), &mut replica_groups)))
+            .map(|wallet| setup_actor(wallet.clone(), &mut replica_groups))
             .collect();
-
-        (replica_groups, actors)
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        Network {
+            replica_groups,
+            actors,
+            msg_queue: Default::default(),
+            rng,
+        }
     }
 
-    fn find_group(index: u8, replica_groups: &mut Vec<ReplicaGroup>) -> Option<&mut ReplicaGroup> {
+    fn find_group(
+        index: ReplicaIndex,
+        replica_groups: &mut Vec<ReplicaGroup>,
+    ) -> Option<&mut ReplicaGroup> {
         for replica_group in replica_groups {
             if replica_group.index == index {
                 return Some(replica_group);
@@ -474,7 +469,7 @@ mod test {
         PublicKey::from(SecretKey::random().public_key())
     }
 
-    fn setup_wallet(balance: u64, replica_group: u8) -> TestWallet {
+    fn setup_wallet(balance: u64, replica_group: ReplicaIndex) -> TestWallet {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new_ed25519(&mut rng);
         let recipient = keypair.public_key();
@@ -499,9 +494,7 @@ mod test {
     }
 
     fn setup_actor(wallet: TestWallet, replica_groups: &mut Vec<ReplicaGroup>) -> TestActor {
-        let replica_group = find_group(wallet.replica_group, replica_groups)
-            .unwrap()
-            .clone();
+        let replica_group = find_group(wallet.replica_group, replica_groups).unwrap();
 
         let actor = Actor::from_snapshot(
             wallet.wallet,
@@ -512,19 +505,19 @@ mod test {
 
         TestActor {
             actor,
-            replica_group,
+            replica_group: replica_group.index,
         }
     }
 
     // Create n replica groups, with k replicas in each
     fn setup_replica_group_keys(
-        group_count: u8,
+        group_count: usize,
         replica_count: u8,
-    ) -> HashMap<u8, ReplicaGroupKeys> {
+    ) -> HashMap<usize, ReplicaGroupKeys> {
         let mut rng = rand::thread_rng();
         let mut groups = HashMap::new();
+        let threshold = (2 * replica_count / 3) - 1;
         for i in 0..group_count {
-            let threshold = (2 * replica_count / 3) - 1;
             let bls_secret_key = SecretKeySet::random(threshold as usize, &mut rng);
             let peers = bls_secret_key.public_keys();
             let mut shares = vec![];
@@ -545,7 +538,7 @@ mod test {
     }
 
     fn setup_replica_groups(
-        group_keys: HashMap<u8, ReplicaGroupKeys>,
+        group_keys: HashMap<usize, ReplicaGroupKeys>,
         wallets: Vec<TestWallet>,
     ) -> Vec<ReplicaGroup> {
         let mut other_groups_keys = HashMap::new();
@@ -583,7 +576,10 @@ mod test {
                     wallets,
                     pending_debits,
                 );
-                replicas.push(replica);
+                replicas.push(TestReplica {
+                    replica,
+                    replica_group: *i,
+                });
             }
             replica_groups.push(ReplicaGroup {
                 index: *i,
@@ -607,30 +603,226 @@ mod test {
         }
     }
 
+    type ReplicaIndex = usize;
+
     #[derive(Debug, Clone)]
     struct TestWallet {
         wallet: Wallet,
         keypair: Keypair,
-        replica_group: u8,
+        replica_group: ReplicaIndex,
     }
 
     #[derive(Debug, Clone)]
     struct TestActor {
         actor: Actor<Validator>,
-        replica_group: ReplicaGroup,
+        replica_group: ReplicaIndex,
     }
 
-    #[derive(Debug, Clone)]
+    impl TestActor {
+        pub fn id(&self) -> PublicKey {
+            self.actor.id()
+        }
+
+        pub fn balance(&self) -> Money {
+            self.actor.balance()
+        }
+
+        pub fn transfer(&mut self, amount: Money, recipient: PublicKey, network: &mut Network) {
+            // -- Send the first cmd. --
+            if let Ok(Some(e)) = self.actor.transfer(amount, recipient, "msg".into()) {
+                self.actor.apply(ActorEvent::TransferInitiated(e.clone()));
+                network.msg_queue.push_back(Msg::Cmd {
+                    cmd: Cmd::ValidateDebit {
+                        signed_debit: e.signed_debit,
+                        signed_credit: e.signed_credit,
+                    },
+                    from: self.id(),
+                    to: self.replica_group,
+                });
+            }
+        }
+
+        pub fn handle(&mut self, event: ReplicaEvent, network: &mut Network) {
+            let result = match event {
+                ReplicaEvent::TransferValidated(validation) => {
+                    let result = self.actor.receive(validation);
+                    if let Ok(Some(validation)) = result {
+                        // println!(
+                        //     "Sending agreement reginetworkion for debit {}",
+                        //     agreed.debit.id
+                        // );
+                        self.actor
+                            .apply(ActorEvent::TransferValidationReceived(validation.clone()));
+                        // println!(
+                        //     "[ACTOR]: Received validation {:?}.",
+                        //     validation
+                        // );
+                        if let Some(proof) = validation.proof {
+                            // -- Send the cmd to the router. --
+                            network.msg_queue.push_back(Msg::Cmd {
+                                cmd: Cmd::RegisterDebitAgreement(proof.clone()),
+                                from: self.actor.id(),
+                                to: self.replica_group,
+                            });
+                            // println!(
+                            //     "[ACTOR]: Agreement reached {:?}. Happy!",
+                            //     proof
+                            // );
+                        }
+                    }
+                }
+                ReplicaEvent::TransferRegistered(reginetworkion) => {
+                    // println!(
+                    //     "[ACTOR]: Received reginetworkion {:?}",
+                    //     reginetworkion
+                    // );
+                    return;
+                }
+                ReplicaEvent::TransferPropagated(propagation) => return,
+                _ => return,
+            };
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestReplica {
+        replica_group: ReplicaIndex,
+        replica: Replica,
+    }
+
+    impl TestReplica {
+        pub fn balance(&self, wallet_id: &PublicKey) -> Option<Money> {
+            self.replica.balance(wallet_id)
+        }
+
+        pub fn wallet(&self, wallet_id: &PublicKey) -> Option<WalletSnapshot> {
+            self.replica.wallet(wallet_id)
+        }
+
+        pub fn handle(&mut self, cmd: Cmd, from: PublicKey, network: &mut Network) {
+            //let cmd_id = cmd.id();
+            // -- Process the cmd. --
+            let result = match cmd {
+                Cmd::ValidateDebit {
+                    signed_debit,
+                    signed_credit,
+                } => match self.replica.validate(signed_debit, signed_credit) {
+                    Err(e) => {
+                        println!(
+                            "-- // -- // Replica {} REJECTED cmd, due to: {} // -- // -- ",
+                            self.replica_group, e
+                        );
+                    }
+                    Ok(Some(e)) => {
+                        let event = ReplicaEvent::TransferValidated(e);
+                        // -- Apply the event! --
+                        self.replica.apply(event.clone());
+                        //let id = e.id();
+                        // --> // println!("-- Replica sending event {:?}", event);
+                        network.msg_queue.push_back(Msg::Event {
+                            event,
+                            //from: self.id(),
+                            to: from,
+                        });
+                        //println!("-- Replica SENT event {:?}", id);
+                    }
+                    _ => return,
+                },
+                Cmd::RegisterDebitAgreement(transfer_proof) => {
+                    match self.replica.register(&transfer_proof, || true) {
+                        Err(e) => {
+                            //println!("-- // -- // Replica {} REJECTED cmd {}, due to: {} // -- // -- ", self.id(), cmd_id, e);
+                        }
+                        Ok(Some(e)) => {
+                            let event = ReplicaEvent::TransferRegistered(e.clone());
+                            // -- Apply the event! --
+                            self.replica.apply(event.clone());
+                            // let id = e.id();
+                            // --> // println!("-- Replica sending event {:?}", event);
+                            network.msg_queue.push_back(Msg::Event {
+                                event,
+                                //from: self.id(),
+                                to: from,
+                            });
+                            network.msg_queue.push_back(Msg::Cmd {
+                                cmd: Cmd::PropagateTransfer(e.transfer_proof.credit_proof()),
+                                from: e.transfer_proof.id().actor,
+                                to: self.replica_group,
+                            });
+                            // --> // println!("-- Replica SENT event {}", id);
+                        }
+                        _ => return,
+                    }
+                }
+                Cmd::PropagateTransfer(proof) => {
+                    match self.replica.receive_propagated(&proof, || None) {
+                        Err(e) => {
+                            //println!("-- // -- // Replica {} REJECTED cmd {}, due to: {} // -- // -- ", self.id(), cmd_id, e);
+                        }
+                        Ok(Some(e)) => {
+                            let event = ReplicaEvent::TransferPropagated(e.clone());
+                            // -- Apply the event! --
+                            self.replica.apply(event.clone());
+                            // let id = e.id();
+                            // --> // println!("-- Replica sending event {:?}", event);
+                            // network.msg_queue.push_back(Msg::Event {
+                            //     event,
+                            //     //from: self.replica_group,
+                            //     to: e.credit_proof.recipient(),
+                            // });
+                            // --> // println!("-- Replica SENT event {}", id);
+                        }
+                        _ => return,
+                    }
+                }
+            };
+        }
+    }
+
+    #[derive(Debug)]
     struct ReplicaGroup {
-        index: u8,
+        index: ReplicaIndex,
         id: PublicKeySet,
-        replicas: Vec<Replica>,
+        replicas: Vec<TestReplica>,
     }
 
     #[derive(Debug, Clone)]
     struct ReplicaGroupKeys {
-        index: u8,
+        index: ReplicaIndex,
         id: PublicKeySet,
         keys: Vec<(SecretKeyShare, usize)>,
+    }
+
+    // Real requirement for shuffle
+    trait LenAndSwap {
+        fn len(&self) -> usize;
+        fn swap(&mut self, i: usize, j: usize);
+    }
+
+    // An exact copy of rand::Rng::shuffle, with the signature modified to
+    // accept any type that implements LenAndSwap
+    fn shuffle<T, R>(values: &mut T, mut rng: R)
+    where
+        T: LenAndSwap,
+        R: Rng,
+    {
+        let mut i = values.len();
+        while i >= 2 {
+            // invariant: elements with index >= i have been locked in place.
+            i -= 1;
+            // lock element i in place.
+            values.swap(i, rng.gen_range(0, i + 1));
+        }
+    }
+
+    // VecDeque trivially fulfills the LenAndSwap requirement, but
+    // we have to spell it out.
+    impl<T> LenAndSwap for VecDeque<T> {
+        fn len(&self) -> usize {
+            self.len()
+        }
+        fn swap(&mut self, i: usize, j: usize) {
+            self.swap(i, j)
+        }
     }
 }

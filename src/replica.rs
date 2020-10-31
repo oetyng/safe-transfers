@@ -428,7 +428,7 @@ impl Replica {
             .is_ok();
         let valid_credit = signed_debit
             .sender()
-            .verify(&signed_debit.actor_signature, credit_bytes)
+            .verify(&signed_credit.actor_signature, credit_bytes)
             .is_ok();
 
         if valid_debit && valid_credit && credit.id() == &debit.credit_id() {
