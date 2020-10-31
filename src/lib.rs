@@ -38,8 +38,8 @@ pub use self::{
 
 use serde::{Deserialize, Serialize};
 use sn_data_types::{
-    CreditAgreementProof, CreditId, DebitId, Error, Money, PublicKey, ReplicaEvent, Result,
-    SignedCredit, SignedDebit, TransferAgreementProof, TransferValidated,
+    CreditAgreementProof, CreditId, DebitId, Error, Money, PublicKey, Result, SignedCredit,
+    SignedDebit, TransferAgreementProof, TransferValidated,
 };
 use std::collections::HashSet;
 
@@ -126,7 +126,7 @@ pub enum ActorEvent {
 /// f.ex. credits that its Replicas were holding upon
 /// the propagation of them from a remote group of Replicas,
 /// or unknown debits that its Replicas were holding
-/// upon the reginetworkion of them from another
+/// upon the registration of them from another
 /// instance of the same Actor.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize, Debug)]
 pub struct TransfersSynched {
@@ -174,9 +174,10 @@ pub struct TransferRegistrationSent {
 }
 
 #[allow(unused)]
+#[cfg(test)]
 mod test {
     use crate::{
-        actor::Actor, genesis, replica::Replica, wallet::WalletSnapshot, ActorEvent, ReplicaEvent,
+        actor::Actor, genesis, replica::Replica, wallet::WalletSnapshot, ActorEvent,
         ReplicaValidator, SignedCredit, SignedDebit, TransferInitiated, Wallet,
     };
     use crdts::{
@@ -186,12 +187,13 @@ mod test {
     use prop::test_runner::*;
     use proptest::prelude::*;
     use rand::RngCore;
-    use rand::{Rng, SeedableRng};
+    use rand::{CryptoRng, Rng, SeedableRng};
     use sn_data_types::{
-        Credit, CreditAgreementProof, CreditId, Debit, Keypair, Money, PublicKey, Result, Transfer,
-        TransferAgreementProof,
+        Credit, CreditAgreementProof, CreditId, Debit, Keypair, Money, PublicKey, ReplicaEvent,
+        Result, Transfer, TransferAgreementProof,
     };
     use std::collections::{HashMap, HashSet};
+    use std::time::{Duration, Instant};
     use threshold_crypto::{PublicKeySet, SecretKey, SecretKeySet, SecretKeyShare};
 
     macro_rules! hashmap {
@@ -207,28 +209,37 @@ mod test {
     // ------------------------------------------------------------------------
 
     #[test]
-    fn single_wallet_test() {
+    fn run_transfers_single_iter() {
         let seed = 3;
-        let num_transfers = 20;
+        let num_transfers = 10;
         let replica_count = 7;
         let mut wallet_configs = HashMap::new();
-        for i in 0..1 {
-            let actors = vec![500, 400, 300, 200, 100];
+        for i in 0..2 {
+            let actors = vec![(i as u64 + 1) * 500, (i as u64 + 1) * 400];
             let _ = wallet_configs.insert(i, actors);
         }
         let mut network = get_network(seed, replica_count, wallet_configs);
-        run_debit(num_transfers, &mut network);
+        run_transfers(num_transfers, &mut network);
         output(&mut network);
         verify(&mut network);
     }
 
     fn output(network: &mut Network) {
+        println!("Printing results..");
+
         for group in &mut network.replica_groups {
             println!("Replica group: {}", group.index);
-            for replica in &group.replicas {
+            for i in 0..group.replicas.len() {
+                let replica = &group.replicas[i];
                 for actor in &network.actors {
                     if let Some(balance) = replica.balance(&actor.id()) {
-                        println!("Replica balance of actor {}: {}", actor.id(), balance.as_nano());
+                        println!(
+                            "Group: {}, replica: {}, balance of actor {}: {}",
+                            group.index,
+                            i,
+                            actor.id(),
+                            balance.as_nano()
+                        );
                     }
                 }
             }
@@ -243,20 +254,16 @@ mod test {
         }
     }
 
-    // #[test]
-    // fn basic_transfer() {
-    //     let _ = transfer_between_actors(100, 10, 2, 3, 0, 1);
-    // }
-
     // --------------------------------------------------------
     //   ----------------- Prop test ------------------------
     // --------------------------------------------------------
 
     proptest! {
         #![proptest_config(ProptestConfig {
-            cases: 1,
+            cases: 6,
             max_local_rejects: u32::MAX,
-            verbose: 2,
+            max_global_rejects: u32::MAX,
+            verbose: 0,
             fork: false,
             .. ProptestConfig::default()
         })]
@@ -265,28 +272,32 @@ mod test {
         fn basic(seed: u64, system: Vec<Vec<u64>>) { // Vec<Vec<u64>> -> ReplicaGroups, Actors and their balances
             //return Err(TestCaseError::Fail("Reason".into()));
             //return Err(TestCaseError::Reject("Reason".into()));
-            let seed = 3;
-            let max_sections = 1;
+            let max_sections = 4;
             let max_actors_in_section = 5;
-            //prop_assume!(max_sections >= system.len());
+            let min_actors_in_system = 2;
+            prop_assume!(system.len() > 0);
+            prop_assume!(max_sections >= system.len());
+            prop_assume!(system.iter().map(|a| a.len()).sum::<usize>() >= min_actors_in_system);
 
             let replica_count = 7;
             let mut wallet_configs = HashMap::new();
             let mut system = system;
-            for i in 0..1 { //system.len() {
-                let actors = vec![500, 400, 300, 200, 100]; // system.remove(0);
-                //prop_assume!(max_actors_in_section >= actors.len());
+            for i in 0..system.len() {
+                let actors = system.remove(0);
+                prop_assume!(actors.len() > 0);
+                prop_assume!(max_actors_in_section >= actors.len());
                 let _ = wallet_configs.insert(i, actors);
             }
             let mut network = get_network(seed, replica_count, wallet_configs);
-            let num_transfers = 20;//network.rng.gen_range(max_actors_in_section / 2, max_sections * max_actors_in_section);
+            let num_transfers = network.rng.gen_range(max_actors_in_section / 2, max_sections * max_actors_in_section);
 
-            run_debit(num_transfers as u32, &mut network);
+            run_transfers(num_transfers as u32, &mut network);
             verify(&mut network);
         }
     }
 
     fn verify(network: &Network) {
+        println!("Verifying..");
         for actor in &network.actors {
             let amount = actor.actor.balance();
             let group = &network.replica_groups[actor.replica_group];
@@ -298,11 +309,10 @@ mod test {
         }
     }
 
-    fn run_debit(num_transfers: u32, network: &mut Network) {
-
+    fn run_transfers(num_transfers: u32, network: &mut Network) {
+        println!("Setting up transfers..");
         for i in 0..num_transfers {
-            let sender_index = network.rng.gen_range(0, network.actors.len());
-            let recipient_index = network.rng.gen_range(0, network.actors.len());
+            let (sender_index, recipient_index) = gen_distinct(network);
             let recipient_key = network.actors[recipient_index].id();
             let mut sender = network.actors.remove(sender_index);
             let amount = network.rng.gen_range(
@@ -320,7 +330,18 @@ mod test {
         synch(network);
     }
 
+    fn gen_distinct(network: &mut Network) -> (usize, usize) {
+        let mut sender_index = 0;
+        let mut recipient_index = 0;
+        while sender_index == recipient_index {
+            sender_index = network.rng.gen_range(0, network.actors.len());
+            recipient_index = network.rng.gen_range(0, network.actors.len());
+        }
+        (sender_index, recipient_index)
+    }
+
     fn synch(network: &mut Network) {
+        println!("Synching..");
         for actor in &mut network.actors {
             let wallet =
                 network.replica_groups[actor.replica_group].replicas[0].wallet(&actor.id());
@@ -343,6 +364,12 @@ mod test {
     }
 
     fn loop_msg_routing(network: &mut Network) {
+        println!("Routing messages..");
+        let timer = Instant::now();
+        let mut msg_count = 0;
+        let mut actor_index = HashMap::new();
+        let mut replica_timings = vec![];
+        let mut actor_timings = vec![];
         while !network.msg_queue.is_empty() {
             let popped = network.msg_queue.pop_front();
             if popped.is_none() {
@@ -352,36 +379,66 @@ mod test {
                 match next {
                     Msg::Cmd { cmd, from, to } => {
                         let mut group = network.replica_groups.remove(to);
+
+                        let replica_timer = Instant::now();
                         for replica in &mut group.replicas {
                             replica.handle(cmd.clone(), from, network);
                         }
+                        replica_timings.push(replica_timer.elapsed().as_millis() as usize);
+
+                        msg_count += group.replicas.len();
                         let _ = network.replica_groups.insert(to, group);
                     }
                     Msg::Event { event, to } => {
-                        for i in 0..network.actors.len() {
-                            if network.actors[i].id() == to {
-                                let mut actor = network.actors.remove(i);
-                                actor.handle(event, network);
-                                let _ = network.actors.insert(i, actor);
-                                break;
+                        if !actor_index.contains_key(&to) {
+                            for i in 0..network.actors.len() {
+                                if network.actors[i].id() == to {
+                                    let _ = actor_index.insert(to, i);
+                                    break;
+                                }
                             }
+                        }
+                        if let Some(index) = actor_index.get(&to) {
+                            let mut actor = network.actors.remove(*index);
+
+                            let actor_timer = Instant::now();
+                            actor.handle(event, network);
+                            actor_timings.push(actor_timer.elapsed().as_millis() as usize);
+
+                            let _ = network.actors.insert(*index, actor);
+                            msg_count += 1;
                         }
                     }
                 }
             }
             shuffle(&mut network.msg_queue, &mut network.rng);
         }
+
+        println!(
+            "Processed {} messages in {} s.",
+            msg_count,
+            timer.elapsed().as_secs()
+        );
+        println!(
+            "Avg actor time per msg {} ms.",
+            actor_timings.iter().sum::<usize>() / actor_timings.len()
+        );
+        println!(
+            "Avg replica group time per msg {} ms.",
+            replica_timings.iter().sum::<usize>() / replica_timings.len()
+        );
+        println!("Actors handled {} msgs.", actor_timings.len());
+        println!("Replicas handled {} msgs.", replica_timings.len() * 7);
     }
 
     // ------------------------------------------------------------------------
     // ------------------------ Setup Helpers ---------------------------------
     // ------------------------------------------------------------------------
 
-    fn get_genesis() -> Result<CreditAgreementProof> {
+    fn get_genesis<R: Rng>(rng: &mut R) -> Result<CreditAgreementProof> {
         let balance = u32::MAX as u64 * 1_000_000_000;
-        let mut rng = rand::thread_rng();
         let threshold = 0;
-        let bls_secret_key = SecretKeySet::random(threshold, &mut rng);
+        let bls_secret_key = SecretKeySet::random(threshold, rng);
         let peer_replicas = bls_secret_key.public_keys();
         let id = PublicKey::Bls(peer_replicas.public_key());
         genesis::get_genesis(balance, id)
@@ -425,26 +482,28 @@ mod test {
         replica_count: u8,
         wallet_configs: HashMap<usize, Vec<u64>>,
     ) -> Network {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+
         let wallets: Vec<_> = wallet_configs
             .iter()
             .map(|(replica_group, balances)| {
                 balances
                     .iter()
-                    .map(|b| setup_wallet(*b, *replica_group))
+                    .map(|b| setup_wallet(*b, *replica_group, &mut rng))
                     .collect::<Vec<_>>()
             })
             .flatten()
             .collect();
 
         let group_count = wallet_configs.len();
-        let group_keys = setup_replica_group_keys(group_count, replica_count);
+        let group_keys = setup_replica_group_keys(group_count, replica_count, &mut rng);
         let mut replica_groups = setup_replica_groups(group_keys, wallets.clone());
 
-        let actors = wallets
+        let actors: Vec<TestActor> = wallets
             .iter()
             .map(|wallet| setup_actor(wallet.clone(), &mut replica_groups))
             .collect();
-        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+
         Network {
             replica_groups,
             actors,
@@ -469,9 +528,12 @@ mod test {
         PublicKey::from(SecretKey::random().public_key())
     }
 
-    fn setup_wallet(balance: u64, replica_group: ReplicaIndex) -> TestWallet {
-        let mut rng = rand::thread_rng();
-        let keypair = Keypair::new_ed25519(&mut rng);
+    fn setup_wallet<R: Rng + CryptoRng>(
+        balance: u64,
+        replica_group: ReplicaIndex,
+        rng: &mut R,
+    ) -> TestWallet {
+        let keypair = Keypair::new_ed25519(rng);
         let recipient = keypair.public_key();
         let mut wallet = Wallet::new(recipient);
 
@@ -510,15 +572,15 @@ mod test {
     }
 
     // Create n replica groups, with k replicas in each
-    fn setup_replica_group_keys(
+    fn setup_replica_group_keys<R: Rng>(
         group_count: usize,
         replica_count: u8,
+        rng: &mut R,
     ) -> HashMap<usize, ReplicaGroupKeys> {
-        let mut rng = rand::thread_rng();
         let mut groups = HashMap::new();
-        let threshold = (2 * replica_count / 3) - 1;
+        let threshold = 3; //(2 * replica_count / 3) - 1;
         for i in 0..group_count {
-            let bls_secret_key = SecretKeySet::random(threshold as usize, &mut rng);
+            let bls_secret_key = SecretKeySet::random(threshold as usize, rng);
             let peers = bls_secret_key.public_keys();
             let mut shares = vec![];
             for j in 0..replica_count {
@@ -541,31 +603,31 @@ mod test {
         group_keys: HashMap<usize, ReplicaGroupKeys>,
         wallets: Vec<TestWallet>,
     ) -> Vec<ReplicaGroup> {
-        let mut other_groups_keys = HashMap::new();
-        for (i, _) in group_keys.clone() {
-            let other = group_keys
+        let mut group_index_and_other_keys = HashMap::new();
+        for (this_group_index, _) in group_keys.clone() {
+            let the_other_groups = group_keys
                 .clone()
                 .into_iter()
-                .filter(|(c, _)| *c != i)
-                .map(|(_, group_keys)| group_keys.id)
+                .filter(|(index, _)| *index != this_group_index)
+                .map(|(_, some_other_groups_keys)| some_other_groups_keys.id)
                 .collect::<HashSet<PublicKeySet>>();
-            let _ = other_groups_keys.insert(i, other);
+            let _ = group_index_and_other_keys.insert(this_group_index, the_other_groups);
         }
 
         let mut replica_groups = vec![];
-        for (i, other) in &other_groups_keys {
+        for (this_group_index, the_other_groups) in &group_index_and_other_keys {
             let group_wallets = wallets
                 .clone()
                 .into_iter()
-                .filter(|c| c.replica_group == *i)
+                .filter(|c| c.replica_group == *this_group_index)
                 .map(|c| (c.wallet.id(), c.wallet))
                 .collect::<HashMap<PublicKey, Wallet>>();
 
             let mut replicas = vec![];
-            let group = group_keys[i].clone();
-            for (secret_key, index) in group.keys {
-                let peer_replicas = group.id.clone();
-                let other_groups = other.clone();
+            let this_group = group_keys[this_group_index].clone();
+            for (secret_key, index) in this_group.keys {
+                let peer_replicas = this_group.id.clone();
+                let other_groups = the_other_groups.clone();
                 let wallets = group_wallets.clone();
                 let pending_debits = Default::default();
                 let replica = Replica::from_snapshot(
@@ -578,12 +640,12 @@ mod test {
                 );
                 replicas.push(TestReplica {
                     replica,
-                    replica_group: *i,
+                    replica_group: *this_group_index,
                 });
             }
             replica_groups.push(ReplicaGroup {
-                index: *i,
-                id: group.id,
+                index: *this_group_index,
+                id: this_group.id,
                 replicas,
             });
         }
@@ -648,7 +710,7 @@ mod test {
                     let result = self.actor.receive(validation);
                     if let Ok(Some(validation)) = result {
                         // println!(
-                        //     "Sending agreement reginetworkion for debit {}",
+                        //     "Sending agreement registration for debit {}",
                         //     agreed.debit.id
                         // );
                         self.actor
@@ -671,10 +733,10 @@ mod test {
                         }
                     }
                 }
-                ReplicaEvent::TransferRegistered(reginetworkion) => {
+                ReplicaEvent::TransferRegistered(registration) => {
                     // println!(
-                    //     "[ACTOR]: Received reginetworkion {:?}",
-                    //     reginetworkion
+                    //     "[ACTOR]: Received registration {:?}",
+                    //     registration
                     // );
                     return;
                 }
@@ -700,7 +762,6 @@ mod test {
         }
 
         pub fn handle(&mut self, cmd: Cmd, from: PublicKey, network: &mut Network) {
-            //let cmd_id = cmd.id();
             // -- Process the cmd. --
             let result = match cmd {
                 Cmd::ValidateDebit {
@@ -739,15 +800,11 @@ mod test {
                             self.replica.apply(event.clone());
                             // let id = e.id();
                             // --> // println!("-- Replica sending event {:?}", event);
-                            network.msg_queue.push_back(Msg::Event {
-                                event,
-                                //from: self.id(),
-                                to: from,
-                            });
+                            let wallet_id = e.transfer_proof.signed_credit.recipient();
                             network.msg_queue.push_back(Msg::Cmd {
                                 cmd: Cmd::PropagateTransfer(e.transfer_proof.credit_proof()),
-                                from: e.transfer_proof.id().actor,
-                                to: self.replica_group,
+                                from: wallet_id, // not really, but doesn't matter here
+                                to: index_of(wallet_id, self.replica_group, network),
                             });
                             // --> // println!("-- Replica SENT event {}", id);
                         }
@@ -777,6 +834,21 @@ mod test {
                 }
             };
         }
+    }
+
+    fn index_of(wallet_id: PublicKey, current: ReplicaIndex, network: &Network) -> usize {
+        for group in &network.replica_groups {
+            if group
+                .replicas
+                .iter()
+                .any(|r| r.wallet(&wallet_id).is_some())
+            {
+                return group.index;
+            }
+        }
+        // since we remove from the vec in order to mut operate on it,
+        // the group won't be found in there if the wallet belongs to current group
+        current
     }
 
     #[derive(Debug)]
