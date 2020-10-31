@@ -24,6 +24,7 @@ anyhow = "1.0.32"
 
 [dev-dependencies]
 proptest = { version = "0.10.1", features = ["std"] }
+rayon = "1.4.1"
 
 [dependencies.serde]
 version = "1.0.97"
