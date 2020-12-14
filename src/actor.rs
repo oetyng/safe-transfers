@@ -347,7 +347,8 @@ impl<V: ReplicaValidator> Actor<V> {
         let credits = self.validate_credits(&events);
         let debits = self.validate_debits(events);
         if !credits.is_empty() || !debits.is_empty() {
-            let mut wallet = Wallet::new(self.id);
+            let mut wallet = self.wallet.clone();
+
             for credit in credits {
                 // append credits _before_ debits
                 wallet.apply_credit(credit.credit_proof.signed_credit.credit)?;
