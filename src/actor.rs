@@ -18,7 +18,7 @@ use itertools::Itertools;
 use log::debug;
 use sn_data_types::{
     Credit, CreditId, Debit, DebitId, Error, Keypair, Money, PublicKey, ReplicaEvent, Result,
-    SignatureShare, SignedCredit, SignedDebit, TransferAgreementProof,
+    SignatureShare, SignedCredit, SignedDebit, TransferAgreementProof, WalletInfo,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -80,6 +80,32 @@ impl<V: ReplicaValidator> Actor<V> {
             next_expected_debit: 0,
             accumulating_validations: Default::default(),
         }
+    }
+
+    ///
+    pub fn from_info(
+        keypair: Arc<Keypair>,
+        info: WalletInfo,
+        replica_validator: V,
+    ) -> Result<Actor<V>> {
+        let id = match keypair.as_ref() {
+            Keypair::Ed25519(pair) => PublicKey::Ed25519(pair.public),
+            Keypair::Bls(pair) => PublicKey::Bls(pair.public),
+            Keypair::BlsShare(share) => PublicKey::Bls(share.public_key_set.public_key()),
+        };
+        let mut actor = Actor {
+            id,
+            keypair,
+            replicas: info.replicas,
+            replica_validator,
+            wallet: Wallet::new(id),
+            next_expected_debit: 0,
+            accumulating_validations: Default::default(),
+        };
+        if let Some(e) = actor.from_history(info.history)? {
+            actor.apply(ActorEvent::TransfersSynched(e))?;
+        }
+        Ok(actor)
     }
 
     /// Temp, for test purposes
@@ -343,11 +369,21 @@ impl<V: ReplicaValidator> Actor<V> {
     /// Todo: This looks to be handling the case when there is a transfer in flight from this client
     /// (i.e. self.next_expected_debit has been incremented, but transfer not yet accumulated).
     /// Just make sure this is 100% the case as well.
-    pub fn synch_events(&self, events: Vec<ReplicaEvent>) -> Outcome<TransfersSynched> {
+    ///
+    /// NB: If a non-complete* set of debits has been provided, this Actor instance
+    /// will still apply any credits, and thus be out of synch with its Replicas,
+    /// as it will have a balance that is higher than at the Replicas.
+    /// (*Non-complete means non-contiguous set or not starting immediately
+    /// after current debit version.)
+    pub fn from_history(&self, events: Vec<ReplicaEvent>) -> Outcome<TransfersSynched> {
+        if events.is_empty() {
+            return Outcome::no_change();
+        }
+        // filter out any credits and debits already existing in current wallet
         let credits = self.validate_credits(&events);
         let debits = self.validate_debits(events);
         if !credits.is_empty() || !debits.is_empty() {
-            let mut wallet = Wallet::new(self.id);
+            let mut wallet = self.wallet.clone();
             for credit in credits {
                 // append credits _before_ debits
                 wallet.apply_credit(credit.credit_proof.signed_credit.credit)?;
@@ -393,6 +429,9 @@ impl<V: ReplicaValidator> Actor<V> {
         valid_credits
     }
 
+    /// Filters out any debits already applied,
+    /// and makes sure the returned set is a contiguous
+    /// set of debits beginning immediately after current debit version.
     #[allow(clippy::explicit_counter_loop)]
     fn validate_debits(&self, events: Vec<ReplicaEvent>) -> Vec<TransferAgreementProof> {
         let mut debits: Vec<_> = events
