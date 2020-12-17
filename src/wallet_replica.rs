@@ -7,18 +7,27 @@
 // permissions and limitations relating to use of the SAFE Network Software.
 
 use super::{
-    wallet::{Wallet, WalletSnapshot},
+    wallet::{Wallet, WalletOwner, WalletSnapshot},
     Outcome, TernaryResult,
 };
 use log::debug;
 #[cfg(feature = "simulated-payouts")]
 use sn_data_types::Credit;
 use sn_data_types::{
-    CreditAgreementProof, Debit, Error, KnownGroupAdded, Money, PublicKey, ReplicaEvent, Result,
-    SignedCredit, SignedDebit, TransferAgreementProof, TransferRegistered,
+    CreditAgreementProof, Debit, Error, Money, PublicKey, ReplicaEvent, Result, Signature,
+    SignedCredit, SignedDebit, SignedTransfer, SignedTransferShare, TransferAgreementProof,
+    TransferRegistered, TransferValidationProposed,
 };
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap};
 use threshold_crypto::{PublicKeySet, PublicKeyShare};
+
+macro_rules! hashmap {
+    ($( $key: expr => $val: expr ),*) => {{
+            let mut map = ::std::collections::HashMap::new();
+            $( let _ = map.insert($key, $val); )*
+            map
+    }}
+}
 
 /// The Replica is the part of an AT2 system
 /// that forms validating groups, and signs
@@ -29,18 +38,20 @@ use threshold_crypto::{PublicKeySet, PublicKeyShare};
 /// Replicas don't initiate transfers or drive the algo - only Actors do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalletReplica {
-    /// The public key of the Wallet.
-    id: PublicKey,
+    /// The owner of the Wallet.
+    id: WalletOwner,
     /// The public key share of this Replica.
     replica_id: PublicKeyShare,
     /// The index of this Replica key share, in the group set.
     key_index: usize,
     /// The PK set of our peer Replicas.
     peer_replicas: PublicKeySet,
-    /// PK sets of other known groups of Replicas.
-    other_groups: HashSet<PublicKeySet>,
+    // /// PK sets of other known groups of Replicas.
+    // other_groups: HashSet<PublicKeySet>,
     /// All wallets that this Replica validates transfers for.
     wallet: Wallet,
+    /// For multisig validations.
+    pending_proposals: HashMap<u64, HashMap<usize, TransferValidationProposed>>,
     /// Ensures that invidual wallet's debit
     /// initiations (ValidateTransfer cmd) are sequential.
     pending_debit: Option<u64>,
@@ -49,19 +60,20 @@ pub struct WalletReplica {
 impl WalletReplica {
     /// A new Replica instance from a history of events.
     pub fn from_history(
-        id: PublicKey,
+        id: WalletOwner,
         replica_id: PublicKeyShare,
         key_index: usize,
         peer_replicas: PublicKeySet,
         events: Vec<ReplicaEvent>,
     ) -> Result<Self> {
         let mut instance = Self::from_snapshot(
-            id,
+            id.clone(),
             replica_id,
             key_index,
             peer_replicas,
-            Default::default(),
+            //Default::default(),
             Wallet::new(id),
+            Default::default(),
             None,
         );
 
@@ -74,12 +86,13 @@ impl WalletReplica {
 
     /// A new Replica instance from current state.
     pub fn from_snapshot(
-        id: PublicKey,
+        id: WalletOwner,
         replica_id: PublicKeyShare,
         key_index: usize,
         peer_replicas: PublicKeySet,
-        other_groups: HashSet<PublicKeySet>,
+        //other_groups: HashSet<PublicKeySet>,
         wallet: Wallet,
+        pending_proposals: HashMap<u64, HashMap<usize, TransferValidationProposed>>,
         pending_debit: Option<u64>,
     ) -> Self {
         Self {
@@ -87,8 +100,9 @@ impl WalletReplica {
             replica_id,
             key_index,
             peer_replicas,
-            other_groups,
+            //other_groups,
             wallet,
+            pending_proposals,
             pending_debit,
         }
     }
@@ -126,13 +140,13 @@ impl WalletReplica {
         self.receive_propagated(credit_proof, past_key)
     }
 
-    /// Adds a PK set for a a new group that we learn of.
-    pub fn add_known_group(&self, group: PublicKeySet) -> Outcome<KnownGroupAdded> {
-        if self.other_groups.contains(&group) {
-            return Err(Error::DataExists);
-        }
-        Outcome::success(KnownGroupAdded { group })
-    }
+    // /// Adds a PK set for a a new group that we learn of.
+    // pub fn add_known_group(&self, group: PublicKeySet) -> Outcome<KnownGroupAdded> {
+    //     if self.other_groups.contains(&group) {
+    //         return Err(Error::DataExists);
+    //     }
+    //     Outcome::success(KnownGroupAdded { group })
+    // }
 
     /// For now, with test money there is no from wallet.., money is created from thin air.
     pub fn test_validate_transfer(
@@ -176,7 +190,7 @@ impl WalletReplica {
             return Outcome::rejected(Error::Unexpected(
                 "Transfer amount must be more than zero.".to_string(),
             ));
-        } else if self.wallet.id() != debit.sender() {
+        } else if self.wallet.id().public_key() != debit.sender() {
             return Outcome::rejected(Error::NoSuchSender);
         } else if self.pending_debit.is_none() && debit.id.counter != 0 {
             return Outcome::rejected(Error::from("out of order msg, actor's counter should be 0"));
@@ -246,8 +260,20 @@ impl WalletReplica {
     /// and thus anything that breaks here, is a bug in the validation..
     pub fn apply(&mut self, event: ReplicaEvent) -> Result<()> {
         match event {
-            ReplicaEvent::KnownGroupAdded(e) => {
-                let _ = self.other_groups.insert(e.group);
+            // ReplicaEvent::KnownGroupAdded(e) => {
+            //     let _ = self.other_groups.insert(e.group);
+            //     Ok(())
+            // }
+            ReplicaEvent::TransferValidationProposed(e) => {
+                let debit = &e.signed_debit.debit;
+                let index = e.signed_debit.actor_signature.index;
+                if let Some(pending) = self.pending_proposals.get_mut(&debit.id.counter) {
+                    let _ = pending.insert(index, e);
+                } else {
+                    let _ = self
+                        .pending_proposals
+                        .insert(debit.id.counter, hashmap!(index => e));
+                };
                 Ok(())
             }
             ReplicaEvent::TransferValidated(e) => {
@@ -391,19 +417,202 @@ impl WalletReplica {
                     return Ok(());
                 }
 
-                // TODO: Check retrospectively(using SectionProofChain) for known groups also
-                // Check all known groups of Replicas.
-                for set in &self.other_groups {
-                    let debiting_replicas = sn_data_types::PublicKey::Bls(set.public_key());
-                    let result =
-                        debiting_replicas.verify(&proof.debiting_replicas_sig, &credit_bytes);
-                    if result.is_ok() {
-                        return Ok(());
-                    }
-                }
+                // // TODO: Check retrospectively(using SectionProofChain) for known groups also
+                // // Check all known groups of Replicas.
+                // for set in &self.other_groups {
+                //     let debiting_replicas = sn_data_types::PublicKey::Bls(set.public_key());
+                //     let result =
+                //         debiting_replicas.verify(&proof.debiting_replicas_sig, &credit_bytes);
+                //     if result.is_ok() {
+                //         return Ok(());
+                //     }
+                // }
                 // If we don't know the public key this was signed with, we won't consider it valid.
                 Err(Error::InvalidSignature)
             }
+        }
+    }
+}
+
+impl WalletReplica {
+    /// Step 1. Main business logic validation of a debit.
+    pub fn propose_validation(
+        &self,
+        signed_transfer: &SignedTransferShare,
+    ) -> Outcome<TransferValidationProposed> {
+        let signed_debit = &signed_transfer.debit();
+        let signed_credit = &signed_transfer.credit();
+        let debit = &signed_debit.debit;
+        let credit = &signed_credit.credit;
+
+        // Always verify signature first! (as to not leak any information).
+        if self.verify_actor_signature_share(signed_transfer).is_err() {
+            return Outcome::rejected(Error::InvalidSignature);
+        } else if debit.sender() == credit.recipient() {
+            return Outcome::rejected(Error::from("Sender and recipient are the same."));
+        } else if credit.id() != &debit.credit_id()? {
+            return Outcome::rejected(Error::from("The credit does not correspond to the debit."));
+        } else if credit.amount() != debit.amount() {
+            return Outcome::rejected(Error::from("Amounts must be equal."));
+        } else if debit.amount() == Money::zero() {
+            return Outcome::rejected(Error::Unexpected(
+                "Transfer amount must be more than zero.".to_string(),
+            ));
+        } else if self.id.public_key() != debit.sender() {
+            return Outcome::rejected(Error::NoSuchSender);
+        } else if self.pending_debit.is_none() && debit.id.counter != 0 {
+            return Outcome::rejected(Error::from("out of order msg, actor's counter should be 0"));
+        } else if let Some(counter) = self.pending_debit {
+            if debit.id.counter != (counter + 1) {
+                return Outcome::rejected(Error::from(format!(
+                    "out of order msg, debit counter: {:?}, current counter: {:?}",
+                    debit.id.counter, counter
+                )));
+            }
+        }
+
+        self.accumulate(TransferValidationProposed {
+            signed_credit: signed_transfer.credit().to_owned(),
+            signed_debit: signed_transfer.debit().to_owned(),
+            agreed_transfer: None,
+        })
+    }
+
+    /// Step 2. Receive validations from Replicas, aggregate the signatures.
+    fn accumulate(
+        &self,
+        proposal: TransferValidationProposed,
+    ) -> Outcome<TransferValidationProposed> {
+        let actors = match &self.id {
+            WalletOwner::Multi(actors) => actors,
+            WalletOwner::Single(_) => return Outcome::rejected(Error::InvalidOwners),
+        };
+        let signed_debit = &proposal.signed_debit;
+        let signed_credit = &proposal.signed_credit;
+        let share_index = signed_debit.share_index();
+        let id = signed_debit.id();
+        let debit_counter = id.counter;
+
+        // check if already received
+        if let Some(map) = self.pending_proposals.get(&debit_counter) {
+            if map.contains_key(&share_index) {
+                return Outcome::no_change();
+            }
+        }
+
+        let mut map = HashMap::new();
+        let map = self.pending_proposals.get(&debit_counter).unwrap_or({
+            let _ = map.insert(share_index, proposal.clone());
+            &map
+        });
+
+        // If the previous count of accumulated + current proposal coming in here,
+        // is greater than the threshold, then we have reached the quorum needed
+        // to build the agreed_transfer. (Quorum = threshold + 1)
+        let majority = map.len() + 1 > actors.threshold() && self.id.public_key() == id.actor;
+
+        if !majority {
+            // No majority reached yet,
+            // so the proposal does not have a populated agreement field.
+            return Outcome::success(proposal);
+        }
+
+        let debit_bytes = match bincode::serialize(&signed_debit.debit) {
+            Err(_) => return Err(Error::Unexpected("Serialization error".to_string())),
+            Ok(data) => data,
+        };
+        let credit_bytes = match bincode::serialize(&signed_credit.credit) {
+            Err(_) => return Err(Error::Unexpected("Serialization error".to_string())),
+            Ok(data) => data,
+        };
+
+        // collect debit sig shares
+        let debit_sig_shares: BTreeMap<_, _> = map
+            .values()
+            .chain(vec![&proposal])
+            .map(|v| v.signed_debit.actor_signature.clone())
+            .map(|s| (s.index, s.share))
+            .collect();
+        // collect credit sig shares
+        let credit_sig_shares: BTreeMap<_, _> = map
+            .values()
+            .chain(vec![&proposal])
+            .map(|v| v.signed_credit.actor_signature.clone())
+            .map(|s| (s.index, s.share))
+            .collect();
+
+        // Combine shares to produce the main signature.
+        let debit_sig = actors.combine_signatures(&debit_sig_shares).map_err(|_| {
+            Error::Unexpected("Could not aggregate with the given SignatureShares".to_string())
+        })?;
+        // Combine shares to produce the main signature.
+        let credit_sig = actors.combine_signatures(&credit_sig_shares).map_err(|_| {
+            Error::Unexpected("Could not aggregate with the given SignatureShares".to_string())
+        })?;
+
+        let valid_debit = actors.public_key().verify(&debit_sig, debit_bytes);
+        let valid_credit = actors.public_key().verify(&credit_sig, credit_bytes);
+
+        // Validate the combined signatures. If the shares were valid, this can't fail.
+        if valid_debit && valid_credit {
+            let mut proposal = proposal.clone();
+            proposal.agreed_transfer = Some(SignedTransfer {
+                debit: SignedDebit {
+                    debit: signed_debit.debit.clone(),
+                    actor_signature: Signature::Bls(debit_sig),
+                },
+                credit: SignedCredit {
+                    credit: signed_credit.credit.clone(),
+                    actor_signature: Signature::Bls(credit_sig),
+                },
+            });
+            Outcome::success(proposal)
+        } else {
+            // else, we have some corrupt data. (todo: Do we need to act on that fact?)
+            Err(Error::Unexpected("we have some corrupt data".to_string()))
+        }
+    }
+
+    fn verify_actor_signature_share(
+        &self,
+        signed_transfer_share: &SignedTransferShare,
+    ) -> Result<()> {
+        println!("Actor signature share verification");
+        let signed_debit = &signed_transfer_share.debit();
+        let signed_credit = &signed_transfer_share.credit();
+        let debit = &signed_debit.debit;
+        let credit = &signed_credit.credit;
+        let debit_bytes = match bincode::serialize(&debit) {
+            Err(_) => return Err(Error::NetworkOther("Could not serialise debit".into())),
+            Ok(bytes) => bytes,
+        };
+        let credit_bytes = match bincode::serialize(&credit) {
+            Err(_) => return Err(Error::NetworkOther("Could not serialise credit".into())),
+            Ok(bytes) => bytes,
+        };
+
+        let valid_debit = signed_transfer_share
+            .sender()
+            .verify(
+                &Signature::BlsShare(signed_debit.actor_signature.clone()),
+                debit_bytes,
+            )
+            .is_ok();
+
+        println!("Debit is valid?: {:?}", valid_debit);
+        let valid_credit = signed_transfer_share
+            .sender()
+            .verify(
+                &Signature::BlsShare(signed_credit.actor_signature.clone()),
+                credit_bytes,
+            )
+            .is_ok();
+        println!("Credit is valid?: {:?}", valid_debit);
+
+        if valid_debit && valid_credit && credit.id() == &debit.credit_id()? {
+            Ok(())
+        } else {
+            Err(Error::InvalidSignature)
         }
     }
 }

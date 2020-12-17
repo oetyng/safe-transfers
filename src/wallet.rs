@@ -9,6 +9,26 @@
 use log::debug;
 use sn_data_types::{Credit, CreditId, Debit, Error, Money, PublicKey, Result};
 use std::collections::HashSet;
+use threshold_crypto::PublicKeySet;
+
+///
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WalletOwner {
+    /// Single owner
+    Single(PublicKey),
+    /// Multi sig owner
+    Multi(PublicKeySet),
+}
+
+impl WalletOwner {
+    /// returns the owner public key
+    pub fn public_key(&self) -> PublicKey {
+        match self {
+            Self::Single(key) => *key,
+            Self::Multi(key_set) => PublicKey::Bls(key_set.public_key()),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct WalletSnapshot {
@@ -30,7 +50,7 @@ impl Into<WalletSnapshot> for Wallet {
 /// The balance and history of transfers for a wallet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wallet {
-    id: PublicKey,
+    id: WalletOwner,
     balance: Money,
     debit_version: u64,
     credit_ids: HashSet<CreditId>,
@@ -38,7 +58,7 @@ pub struct Wallet {
 
 impl Wallet {
     /// Creates a new wallet.
-    pub fn new(id: PublicKey) -> Self {
+    pub fn new(id: WalletOwner) -> Self {
         Self {
             id,
             balance: Money::zero(),
@@ -49,7 +69,7 @@ impl Wallet {
 
     /// Creates a wallet from existing state.
     pub fn from(
-        id: PublicKey,
+        id: WalletOwner,
         balance: Money,
         debit_version: u64,
         credit_ids: HashSet<CreditId>,
@@ -63,8 +83,8 @@ impl Wallet {
     }
 
     /// Get the id of the wallet.
-    pub fn id(&self) -> PublicKey {
-        self.id
+    pub fn id(&self) -> &WalletOwner {
+        &self.id
     }
 
     /// Query for next version.
@@ -85,7 +105,7 @@ impl Wallet {
     /// Mutates state.
     pub fn apply_debit(&mut self, debit: Debit) -> Result<()> {
         debug!("Wallet applying debit");
-        if self.id == debit.id.actor {
+        if self.id.public_key() == debit.id.actor {
             match self.balance.checked_sub(debit.amount) {
                 Some(amount) => self.balance = amount,
                 None => {
@@ -108,7 +128,7 @@ impl Wallet {
     /// Mutates state.
     pub fn apply_credit(&mut self, credit: Credit) -> Result<()> {
         debug!("Wallet applying credit");
-        if self.id == credit.recipient() {
+        if self.id.public_key() == credit.recipient() {
             match self.balance.checked_add(credit.amount) {
                 Some(amount) => self.balance = amount,
                 None => {
@@ -133,7 +153,7 @@ impl Wallet {
     pub fn simulated_credit(&mut self, credit: Credit) -> Result<()> {
         debug!("Wallet simulated credit");
 
-        if self.id == credit.recipient() {
+        if self.id.public_key() == credit.recipient() {
             match self.balance.checked_add(credit.amount) {
                 Some(amount) => self.balance = amount,
                 None => {
@@ -157,7 +177,7 @@ impl Wallet {
     pub fn simulated_debit(&mut self, debit: Debit) -> Result<()> {
         debug!("Wallet simulated debit");
 
-        if self.id == debit.id.actor {
+        if self.id.public_key() == debit.id.actor {
             match self.balance.checked_sub(debit.amount) {
                 Some(amount) => self.balance = amount,
                 None => {
@@ -196,7 +216,7 @@ mod test {
             amount: balance,
             msg: "asdf".to_string(),
         };
-        let mut wallet = Wallet::new(first_credit.recipient);
+        let mut wallet = Wallet::new(WalletOwner::Single(first_credit.recipient));
         wallet.apply_credit(first_credit.clone())?;
         let second_credit = Credit {
             id: Default::default(),
@@ -224,7 +244,7 @@ mod test {
             amount: balance,
             msg: "asdf".to_string(),
         };
-        let mut wallet = Wallet::new(first_credit.recipient);
+        let mut wallet = Wallet::new(WalletOwner::Single(first_credit.recipient));
         wallet.apply_credit(first_credit.clone())?;
         let first_debit = Debit {
             id: Dot::new(first_credit.recipient, 0),
