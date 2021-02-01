@@ -8,8 +8,8 @@
 
 use crate::{Error, ReplicaValidator, Result, TransferActor as Actor, Wallet, WalletReplica};
 use sn_data_types::{
-    Credit, CreditAgreementProof, Keypair, Money, OwnerType, PublicKey, Result as DtResult,
-    Signature, SignatureShare, SignedCredit, SignedDebit, SignedTransfer, Signing,
+    Credit, CreditAgreementProof, Keypair, Money, PublicKey, SignatureShare, SignedCredit,
+    SignedDebit, SignedTransfer,
 };
 use std::{
     collections::{BTreeMap, HashMap},

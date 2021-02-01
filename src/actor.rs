@@ -615,8 +615,8 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
 #[cfg(test)]
 mod test {
     use super::{
-        super::test_utils::TestSigning, Actor, ActorEvent, Error, OwnerType, ReplicaValidator,
-        Result, TransferInitiated, TransferRegistrationSent, Wallet,
+        Actor, ActorEvent, Error, OwnerType, ReplicaValidator, Result, TransferInitiated,
+        TransferRegistrationSent, Wallet,
     };
     use crdts::Dot;
     use serde::Serialize;
@@ -624,7 +624,7 @@ mod test {
         Credit, Debit, Keypair, Money, PublicKey, Signature, SignatureShare,
         TransferAgreementProof, TransferValidated,
     };
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::collections::BTreeMap;
     use threshold_crypto::{SecretKey, SecretKeySet};
     struct Validator {}
 

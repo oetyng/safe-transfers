@@ -37,8 +37,8 @@ pub use self::{
 
 use serde::{Deserialize, Serialize};
 use sn_data_types::{
-    CreditId, DebitId, Money, OwnerType, PublicKey, SignedCredit, SignedDebit, Signing,
-    TransferAgreementProof, TransferValidated,
+    CreditId, DebitId, Money, PublicKey, SignedCredit, SignedDebit, TransferAgreementProof,
+    TransferValidated,
 };
 use std::collections::HashSet;
 
