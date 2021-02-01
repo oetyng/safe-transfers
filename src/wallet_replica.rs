@@ -7,7 +7,7 @@
 // permissions and limitations relating to use of the SAFE Network Software.
 
 use super::{
-    wallet::{Wallet, WalletOwner, WalletSnapshot},
+    wallet::{Wallet, WalletSnapshot},
     Outcome, TernaryResult,
 };
 use crate::{Error, Result};
@@ -15,9 +15,9 @@ use log::debug;
 #[cfg(feature = "simulated-payouts")]
 use sn_data_types::Credit;
 use sn_data_types::{
-    CreditAgreementProof, Debit, Money, PublicKey, ReplicaEvent, Signature, SignedCredit,
-    SignedDebit, SignedTransfer, SignedTransferShare, TransferAgreementProof, TransferRegistered,
-    TransferValidationProposed,
+    CreditAgreementProof, Debit, Money, OwnerType, PublicKey, ReplicaEvent, Signature,
+    SignedCredit, SignedDebit, SignedTransfer, SignedTransferShare, TransferAgreementProof,
+    TransferRegistered, TransferValidationProposed,
 };
 use std::collections::{BTreeMap, HashMap};
 use threshold_crypto::{PublicKeySet, PublicKeyShare};
@@ -40,7 +40,7 @@ macro_rules! hashmap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalletReplica {
     /// The owner of the Wallet.
-    id: WalletOwner,
+    id: OwnerType,
     /// The public key share of this Replica.
     replica_id: PublicKeyShare,
     /// The index of this Replica key share, in the group set.
@@ -59,7 +59,7 @@ pub struct WalletReplica {
 impl WalletReplica {
     /// A new Replica instance from a history of events.
     pub fn from_history(
-        id: WalletOwner,
+        id: OwnerType,
         replica_id: PublicKeyShare,
         key_index: usize,
         peer_replicas: PublicKeySet,
@@ -84,7 +84,7 @@ impl WalletReplica {
 
     /// A new Replica instance from current state.
     pub fn from_snapshot(
-        id: WalletOwner,
+        id: OwnerType,
         replica_id: PublicKeyShare,
         key_index: usize,
         peer_replicas: PublicKeySet,
@@ -462,8 +462,8 @@ impl WalletReplica {
         proposal: TransferValidationProposed,
     ) -> Outcome<TransferValidationProposed> {
         let actors = match &self.id {
-            WalletOwner::Multi(actors) => actors,
-            WalletOwner::Single(_) => return Outcome::rejected(Error::InvalidOwner),
+            OwnerType::Multi(actors) => actors,
+            OwnerType::Single(_) => return Outcome::rejected(Error::InvalidOwner),
         };
         let signed_debit = &proposal.signed_debit;
         let signed_credit = &proposal.signed_credit;

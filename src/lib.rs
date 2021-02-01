@@ -32,16 +32,13 @@ mod wallet;
 mod wallet_replica;
 
 pub use self::{
-    actor::{Actor as TransferActor, ActorSigning},
-    error::Error,
-    wallet::{Wallet, WalletOwner},
-    wallet_replica::WalletReplica,
+    actor::Actor as TransferActor, error::Error, wallet::Wallet, wallet_replica::WalletReplica,
 };
 
 use serde::{Deserialize, Serialize};
 use sn_data_types::{
-    CreditId, DebitId, Money, PublicKey, SignedCredit, SignedDebit, TransferAgreementProof,
-    TransferValidated,
+    CreditId, DebitId, Money, OwnerType, PublicKey, SignedCredit, SignedDebit, Signing,
+    TransferAgreementProof, TransferValidated,
 };
 use std::collections::HashSet;
 
@@ -153,16 +150,16 @@ pub struct TransferRegistrationSent {
 mod test {
     use crate::{
         actor::Actor, test_utils, test_utils::*, wallet, wallet_replica::WalletReplica, ActorEvent,
-        Error, ReplicaValidator, Result, TransferInitiated, Wallet, WalletOwner,
+        Error, ReplicaValidator, Result, TransferInitiated, Wallet,
     };
     use crdts::{
         quickcheck::{quickcheck, TestResult},
         Dot,
     };
     use sn_data_types::{
-        ActorHistory, Credit, CreditAgreementProof, CreditId, Debit, Keypair, Money, PublicKey,
-        ReplicaEvent, SignatureShare, SignedCredit, SignedDebit, SignedTransfer, Transfer,
-        TransferAgreementProof,
+        ActorHistory, Credit, CreditAgreementProof, CreditId, Debit, Keypair, Money, OwnerType,
+        PublicKey, ReplicaEvent, SignatureShare, SignedCredit, SignedDebit, SignedTransfer,
+        Transfer, TransferAgreementProof,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
@@ -571,7 +568,7 @@ mod test {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new_ed25519(&mut rng);
         let recipient = keypair.public_key();
-        let owner = WalletOwner::Single(recipient);
+        let owner = OwnerType::Single(recipient);
         let mut wallet = Wallet::new(owner);
         setup_wallet(balance, section, keypair, wallet)
     }
@@ -598,7 +595,7 @@ mod test {
 
         Ok(TestWallet {
             wallet,
-            keypair: Arc::new(keypair),
+            keypair,
             section,
         })
     }
@@ -608,9 +605,7 @@ mod test {
 
         let actor = Actor::from_snapshot(
             wallet.wallet,
-            TestSigning {
-                keypair: wallet.keypair,
-            },
+            wallet.keypair,
             section.id.clone(),
             Validator {},
         );
@@ -773,7 +768,7 @@ mod test {
             bls_secret_key.secret_key_share(0),
             peer_replicas.clone(),
         );
-        let owner = WalletOwner::Multi(peer_replicas.clone());
+        let owner = OwnerType::Multi(peer_replicas.clone());
         let empty_genesis_wallet = setup_wallet(0, 0, keypair, Wallet::new(owner))?;
         let genesis_credit = get_multi_genesis(balance, id, bls_secret_key.clone())?;
 

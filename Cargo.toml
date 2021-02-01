@@ -12,7 +12,9 @@ version = "0.2.11"
 
 [dependencies]
 bincode = "1.2.1"
-sn_data_types = "~0.13.4"
+# FYI, this is a temp copy of the PR branch, which with a '+' in it, is giving cargo a bad time.
+sn_data_types = {git="https://github.com/joshuef/sn_data_types", branch="Feat-SigningAndOwnershiip"}
+# sn_data_types = "~0.13.4"
 thiserror = "1.0.23"
 crdts = "4.3.0"
 threshold_crypto = "~0.4.0"

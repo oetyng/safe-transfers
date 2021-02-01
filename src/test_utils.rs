@@ -6,13 +6,10 @@
 // KIND, either express or implied. Please review the Licences for the specific language governing
 // permissions and limitations relating to use of the SAFE Network Software.
 
-use crate::{
-    ActorSigning, Error, ReplicaValidator, Result, TransferActor as Actor, Wallet, WalletOwner,
-    WalletReplica,
-};
+use crate::{Error, ReplicaValidator, Result, TransferActor as Actor, Wallet, WalletReplica};
 use sn_data_types::{
-    Credit, CreditAgreementProof, Keypair, Money, PublicKey, Result as DtResult, Signature,
-    SignatureShare, SignedCredit, SignedDebit, SignedTransfer,
+    Credit, CreditAgreementProof, Keypair, Money, OwnerType, PublicKey, Result as DtResult,
+    Signature, SignatureShare, SignedCredit, SignedDebit, SignedTransfer, Signing,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -185,13 +182,13 @@ impl ReplicaValidator for Validator {
 #[derive(Debug, Clone)]
 pub struct TestWallet {
     pub wallet: Wallet,
-    pub keypair: Arc<Keypair>,
+    pub keypair: Keypair,
     pub section: u8,
 }
 
 #[derive(Debug, Clone)]
 pub struct TestActor {
-    pub actor: Actor<Validator, TestSigning>,
+    pub actor: Actor<Validator, Keypair>,
     pub section: Section,
 }
 #[derive(Debug, Clone)]
@@ -218,46 +215,6 @@ pub struct SectionKeys {
 #[derive(Debug, Clone)]
 pub struct TestSigning {
     pub keypair: Arc<Keypair>,
-}
-
-impl ActorSigning for TestSigning {
-    fn id(&self) -> WalletOwner {
-        match self.keypair.as_ref() {
-            Keypair::Ed25519(pair) => WalletOwner::Single(PublicKey::Ed25519(pair.public)),
-            Keypair::BlsShare(share) => WalletOwner::Multi(share.public_key_set.clone()),
-        }
-    }
-
-    fn sign<T: serde::Serialize>(&self, data: &T) -> DtResult<Signature> {
-        use sn_data_types::Error as DtError;
-        let bytes = bincode::serialize(data).map_err(|e| DtError::Serialisation(e.to_string()))?;
-        Ok(self.keypair.sign(&bytes))
-    }
-
-    fn verify<T: serde::Serialize>(&self, signature: &Signature, data: &T) -> bool {
-        let data = match bincode::serialize(&data) {
-            Err(_) => return false,
-            Ok(data) => data,
-        };
-        match signature {
-            Signature::Bls(sig) => {
-                if let WalletOwner::Multi(set) = self.id() {
-                    set.public_key().verify(&sig, data)
-                } else {
-                    false
-                }
-            }
-            ed @ Signature::Ed25519(_) => self.keypair.public_key().verify(ed, data).is_ok(),
-            Signature::BlsShare(share) => {
-                if let WalletOwner::Multi(set) = self.id() {
-                    let pubkey_share = set.public_key_share(share.index);
-                    pubkey_share.verify(&share.share, data)
-                } else {
-                    false
-                }
-            }
-        }
-    }
 }
 
 /// An impl of ReplicaSigningTrait.

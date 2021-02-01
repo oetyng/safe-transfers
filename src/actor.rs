@@ -7,7 +7,7 @@
 // permissions and limitations relating to use of the SAFE Network Software.
 
 use super::{
-    wallet::{Wallet, WalletOwner, WalletSnapshot},
+    wallet::{Wallet, WalletSnapshot},
     ActorEvent, Error, Outcome, ReplicaValidator, Result, TernaryResult, TransferInitiated,
     TransferRegistrationSent, TransferValidated, TransferValidationReceived, TransfersSynched,
 };
@@ -15,31 +15,21 @@ use crdts::Dot;
 use itertools::Itertools;
 use log::debug;
 use sn_data_types::{
-    ActorHistory, Credit, CreditAgreementProof, CreditId, Debit, DebitId, Money, PublicKey,
-    Result as DtResult, Signature, SignatureShare, SignedCredit, SignedDebit,
-    TransferAgreementProof, WalletInfo,
+    ActorHistory, Credit, CreditAgreementProof, CreditId, Debit, DebitId, Money, OwnerType,
+    PublicKey, SignatureShare, SignedCredit, SignedDebit, Signing, TransferAgreementProof,
+    WalletInfo,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use threshold_crypto::PublicKeySet;
-
-///
-pub trait ActorSigning {
-    ///
-    fn id(&self) -> WalletOwner;
-    ///
-    fn sign<T: serde::Serialize>(&self, data: &T) -> DtResult<Signature>;
-    ///
-    fn verify<T: serde::Serialize>(&self, sig: &Signature, data: &T) -> bool;
-}
 
 /// The Actor is the part of an AT2 system
 /// that initiates transfers, by requesting Replicas
 /// to validate them, and then receive the proof of agreement.
 /// It also syncs transfers from the Replicas.
 #[derive(Debug, Clone)]
-pub struct Actor<V: ReplicaValidator, S: ActorSigning> {
+pub struct Actor<V: ReplicaValidator, S: Signing> {
     ///
-    id: WalletOwner,
+    id: OwnerType,
     ///
     signing: S,
     /// Set of all transfers impacting a given identity
@@ -57,7 +47,7 @@ pub struct Actor<V: ReplicaValidator, S: ActorSigning> {
     replica_validator: V,
 }
 
-impl<V: ReplicaValidator, S: ActorSigning> Actor<V, S> {
+impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
     /// Use this ctor for a new instance,
     /// or to rehydrate from events ([see the synch method](Actor::synch)).
     /// Pass in the key set of the replicas of this actor, i.e. our replicas.
@@ -128,7 +118,7 @@ impl<V: ReplicaValidator, S: ActorSigning> Actor<V, S> {
     }
 
     /// Query for the id of the Actor.
-    pub fn owner(&self) -> &WalletOwner {
+    pub fn owner(&self) -> &OwnerType {
         &self.id
     }
 
@@ -625,8 +615,8 @@ impl<V: ReplicaValidator, S: ActorSigning> Actor<V, S> {
 #[cfg(test)]
 mod test {
     use super::{
-        super::test_utils::TestSigning, Actor, ActorEvent, Error, ReplicaValidator, Result,
-        TransferInitiated, TransferRegistrationSent, Wallet, WalletOwner,
+        super::test_utils::TestSigning, Actor, ActorEvent, Error, OwnerType, ReplicaValidator,
+        Result, TransferInitiated, TransferRegistrationSent, Wallet,
     };
     use crdts::Dot;
     use serde::Serialize;
@@ -751,7 +741,7 @@ mod test {
         Ok(())
     }
 
-    fn get_debit(actor: &Actor<Validator, TestSigning>) -> Result<TransferInitiated> {
+    fn get_debit(actor: &Actor<Validator, Keypair>) -> Result<TransferInitiated> {
         let event = actor
             .transfer(Money::from_nano(10), get_random_pk(), "asdf".to_string())?
             .ok_or(Error::UnexpectedOutcome)?;
@@ -868,7 +858,7 @@ mod test {
 
     fn get_actor_and_replicas_sk_set(
         amount: u64,
-    ) -> Result<(Actor<Validator, TestSigning>, SecretKeySet)> {
+    ) -> Result<(Actor<Validator, Keypair>, SecretKeySet)> {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new_ed25519(&mut rng);
         let client_pubkey = keypair.public_key();
@@ -878,12 +868,10 @@ mod test {
         let sender = Dot::new(get_random_pk(), 0);
         let credit = get_credit(sender, client_pubkey, balance)?;
         let replica_validator = Validator {};
-        let mut wallet = Wallet::new(WalletOwner::Single(credit.recipient()));
+        let mut wallet = Wallet::new(OwnerType::Single(credit.recipient()));
         wallet.apply_credit(credit)?;
-        let signing = TestSigning {
-            keypair: Arc::new(keypair),
-        };
-        let actor = Actor::from_snapshot(wallet, signing, replicas_id, replica_validator);
+
+        let actor = Actor::from_snapshot(wallet, keypair, replicas_id, replica_validator);
         Ok((actor, bls_secret_key))
     }
 

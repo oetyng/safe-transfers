@@ -8,36 +8,8 @@
 
 use crate::{Error, Result};
 use log::debug;
-use sn_data_types::{Credit, CreditId, Debit, Money, PublicKey};
+use sn_data_types::{Credit, CreditId, Debit, Money, OwnerType};
 use std::collections::HashSet;
-use threshold_crypto::PublicKeySet;
-
-///
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WalletOwner {
-    /// Single owner
-    Single(PublicKey),
-    /// Multi sig owner
-    Multi(PublicKeySet),
-}
-
-impl WalletOwner {
-    /// Returns the owner public key
-    pub fn public_key(&self) -> PublicKey {
-        match self {
-            Self::Single(key) => *key,
-            Self::Multi(key_set) => PublicKey::Bls(key_set.public_key()),
-        }
-    }
-
-    /// Tries to get the key set in case this is a Multi owner.
-    pub fn public_key_set(&self) -> Result<PublicKeySet> {
-        match self {
-            Self::Single(_) => Err(Error::InvalidOwner),
-            Self::Multi(key_set) => Ok(key_set.clone()),
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct WalletSnapshot {
@@ -59,7 +31,7 @@ impl Into<WalletSnapshot> for Wallet {
 /// The balance and history of transfers for a wallet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wallet {
-    id: WalletOwner,
+    id: OwnerType,
     balance: Money,
     debit_version: u64,
     credit_ids: HashSet<CreditId>,
@@ -67,7 +39,7 @@ pub struct Wallet {
 
 impl Wallet {
     /// Creates a new wallet.
-    pub fn new(id: WalletOwner) -> Self {
+    pub fn new(id: OwnerType) -> Self {
         Self {
             id,
             balance: Money::zero(),
@@ -78,7 +50,7 @@ impl Wallet {
 
     /// Creates a wallet from existing state.
     pub fn from(
-        id: WalletOwner,
+        id: OwnerType,
         balance: Money,
         debit_version: u64,
         credit_ids: HashSet<CreditId>,
@@ -92,7 +64,7 @@ impl Wallet {
     }
 
     /// Get the id of the wallet.
-    pub fn id(&self) -> &WalletOwner {
+    pub fn id(&self) -> &OwnerType {
         &self.id
     }
 
@@ -193,7 +165,7 @@ mod test {
             amount: balance,
             msg: "asdf".to_string(),
         };
-        let mut wallet = Wallet::new(WalletOwner::Single(first_credit.recipient));
+        let mut wallet = Wallet::new(OwnerType::Single(first_credit.recipient));
         wallet.apply_credit(first_credit.clone())?;
         let second_credit = Credit {
             id: Default::default(),
@@ -221,7 +193,7 @@ mod test {
             amount: balance,
             msg: "asdf".to_string(),
         };
-        let mut wallet = Wallet::new(WalletOwner::Single(first_credit.recipient));
+        let mut wallet = Wallet::new(OwnerType::Single(first_credit.recipient));
         wallet.apply_credit(first_credit.clone())?;
         let first_debit = Debit {
             id: Dot::new(first_credit.recipient, 0),
