@@ -423,7 +423,7 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
     /// There is no validation of an event, it is assumed to have
     /// been properly validated before raised, and thus anything that breaks is a bug.
     pub fn apply(&mut self, event: ActorEvent) -> Result<()> {
-        debug!("Applying event {:?}", event);
+        debug!(">>>>> ********* transfers Applying event {:?}", event);
         match event {
             ActorEvent::TransferInitiated(e) => {
                 self.next_expected_debit = e.id().counter + 1;
@@ -748,7 +748,7 @@ mod test {
         for i in 0..7 {
             let transfer_validation = actor
                 .receive(validations[i].clone())?
-                .ok_or(Error::UnexpectedOutcome)?;
+                .ok_or(Error::ReceiveValidationFailed)?;
 
             if i < 1
             // threshold is 1
@@ -768,7 +768,7 @@ mod test {
     fn get_debit(actor: &Actor<Validator, Keypair>) -> Result<TransferInitiated> {
         let event = actor
             .transfer(Token::from_nano(10), get_random_pk(), "asdf".to_string())?
-            .ok_or(Error::UnexpectedOutcome)?;
+            .ok_or(Error::TransferCreationFailed)?;
         Ok(event)
     }
 

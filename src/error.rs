@@ -76,16 +76,50 @@ pub enum Error {
     /// Adding this transfer would cause an overflow
     #[error("Overflow when adding balance {0} and credit of: {1}")]
     AdditionOverflow(Token, Token),
-    /// Unexpected outcome
-    // TODO: clarify this...
-    #[error("Unexpected outcome")]
-    UnexpectedOutcome,
+ 
+    /// Receive validation failed..
+    #[error("Receive validation failed")]
+    ReceiveValidationFailed,
+    
+    /// TransferCreationFailed..
+    #[error("TransferCreationFailed")]
+    TransferCreationFailed,
+    /// SenderValidationFailed..
+    #[error("SenderValidationFailed")]
+    SenderValidationFailed,
+    /// RegisterProofFailed..
+    #[error("RegisterProofFailed")]
+    RegisterProofFailed,
+    /// InvalidCreditOrDebit..
+    #[error("InvalidCreditOrDebit")]
+    InvalidCreditOrDebit,
+    /// CouldNotGetWalletForReplica..
+    #[error("CouldNotGetWalletForReplica")]
+    CouldNotGetWalletForReplica,
+    /// CouldNotFindGroup..
+    #[error("CouldNotFindGroup")]
+    CouldNotFindGroup,
+
+     /// ReceivePropagationFailed..
+     #[error("ReceivePropagationFailed")]
+     ReceivePropagationFailed,
+
+     /// SyncFailed..
+     #[error("SyncFailed")]
+     SyncFailed,
+
+    /// ValidationFailed..
+    #[error("ValidationFailed")]
+    ValidationFailed,
+    /// GetGenesisFailed..
+    #[error("GenesisFailed")]
+    GenesisFailed,
     /// Unknown error
     #[error("Unknown error: {0}")]
     Unknown(String),
     /// Wallet not found
-    #[error("Wallet not found locally. The following debit was the cause: {0:?}")]
-    WalletNotFound(Debit),
+    #[error("{0} Wallet not found locally.")]
+    WalletNotFound(PublicKey),
     /// Signature shares are insufficient for BLS aggregation
     #[error("Could not aggregate with given signature shares")]
     CannotAggregate,
