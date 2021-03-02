@@ -222,7 +222,7 @@ mod test {
         };
         let _ = wallet_replica
             .genesis(&genesis_credit, || past_key)?
-            .ok_or(Error::UnexpectedOutcome)?;
+            .ok_or(Error::GetGenesisFailed)?;
 
         let event = ReplicaEvent::TransferPropagated(sn_data_types::TransferPropagated {
             credit_proof: genesis_credit.clone(),
@@ -279,7 +279,7 @@ mod test {
         };
         let _ = wallet_replica
             .genesis(&genesis_credit, || past_key)?
-            .ok_or(Error::UnexpectedOutcome)?;
+            .ok_or(Error::GenesisFailed)?;
 
         wallet_replica.apply(ReplicaEvent::TransferPropagated(
             sn_data_types::TransferPropagated {
@@ -310,7 +310,7 @@ mod test {
         };
         let _ = wallet_replica
             .genesis(&genesis_credit, || Ok(past_key))?
-            .ok_or(Error::UnexpectedOutcome)?;
+            .ok_or(Error::GenesisFailed)?;
 
         wallet_replica.apply(ReplicaEvent::TransferPropagated(
             sn_data_types::TransferPropagated {
@@ -374,7 +374,7 @@ mod test {
         let transfer = init_transfer(&mut sender, recipient.actor.id())?;
         // 2. Validate at Sender Replicas.
         let debit_proof =
-            validate_at_sender_replicas(transfer, &mut sender)?.ok_or(Error::UnexpectedOutcome)?;
+            validate_at_sender_replicas(transfer, &mut sender)?.ok_or(Error::SenderValidationFailed)?;
         // 3. Register at Sender Replicas.
         register_at_debiting_replicas(&debit_proof, &mut sender_section)?;
         // 4. Propagate to Recipient Replicas.
@@ -410,7 +410,7 @@ mod test {
         let transfer = sender
             .actor
             .transfer(sender.actor.balance(), to, "asdf".to_string())?
-            .ok_or(Error::UnexpectedOutcome)?;
+            .ok_or(Error::TransferCreationFailed)?;
 
         sender
             .actor
@@ -431,7 +431,7 @@ mod test {
             };
             let _ = wallet_replica
                 .validate(&transfer.signed_debit, &transfer.signed_credit)?
-                .ok_or(Error::UnexpectedOutcome)?;
+                .ok_or(Error::ValidationFailed)?;
 
             let signed_transfer = SignedTransfer {
                 debit: transfer.signed_debit.clone(),
@@ -452,7 +452,7 @@ mod test {
             let validation_received = sender
                 .actor
                 .receive(validation)?
-                .ok_or(Error::UnexpectedOutcome)?;
+                .ok_or(Error::ReceiveValidationFailed)?;
             sender.actor.apply(ActorEvent::TransferValidationReceived(
                 validation_received.clone(),
             ))?;
@@ -460,7 +460,7 @@ mod test {
                 let registered = sender
                     .actor
                     .register(proof.clone())?
-                    .ok_or(Error::UnexpectedOutcome)?;
+                    .ok_or(Error::RegisterProofFailed)?;
                 sender
                     .actor
                     .apply(ActorEvent::TransferRegistrationSent(registered))?;
@@ -483,7 +483,7 @@ mod test {
             let past_key = Ok(PublicKey::Bls(debit_proof.replica_keys().public_key()));
             let registered = wallet_replica
                 .register(debit_proof, || past_key)?
-                .ok_or(Error::UnexpectedOutcome)?;
+                .ok_or(Error::RegisterProofFailed)?;
             wallet_replica.apply(ReplicaEvent::TransferRegistered(registered))?;
         }
         Ok(())
@@ -505,7 +505,7 @@ mod test {
                 let past_key = Ok(PublicKey::Bls(credit_proof.replica_keys().public_key()));
                 let _ = wallet_replica
                     .receive_propagated(&credit_proof, || past_key)?
-                    .ok_or(Error::UnexpectedOutcome)?;
+                    .ok_or(Error::ReceivePropagationFailed)?;
 
                 let propagated = sn_data_types::TransferPropagated {
                     credit_proof: credit_proof.clone(),
@@ -527,8 +527,8 @@ mod test {
         let wallet = section.elders[0]
             .replicas
             .get(&recipient.actor.id())
-            .ok_or(Error::UnexpectedOutcome)?;
-        let snapshot = wallet.wallet().ok_or(Error::UnexpectedOutcome)?;
+            .ok_or(Error::WalletNotFound(recipient.actor.id()))?;
+        let snapshot = wallet.wallet().ok_or(Error::CouldNotGetWalletForReplica)?;
         let state = recipient
             .actor
             .synch(
@@ -536,7 +536,7 @@ mod test {
                 snapshot.debit_version,
                 snapshot.credit_ids,
             )?
-            .ok_or(Error::UnexpectedOutcome)?;
+            .ok_or(Error::SyncFailed)?;
         recipient.actor.apply(ActorEvent::StateSynched(state))
     }
 
@@ -594,7 +594,7 @@ mod test {
     }
 
     fn setup_actor(wallet: TestWallet, sections: &[Section]) -> Result<TestActor> {
-        let section = find_group(wallet.section, sections).ok_or(Error::UnexpectedOutcome)?;
+        let section = find_group(wallet.section, sections).ok_or(Error::CouldNotFindGroup)?;
 
         let actor = Actor::from_snapshot(
             wallet.wallet,
