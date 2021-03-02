@@ -556,8 +556,8 @@ impl WalletReplica {
             });
             Outcome::success(proposal)
         } else {
-            error!("valid debit? {:?} : sender: {:?} recipient {:?}", valid_debit, proposal.sender(), proposal.recipient());
-            error!("valid credit? {:?}", valid_credit);
+            error!(">>>> valid debit? {:?} : sender: {:?} recipient {:?}", valid_debit, proposal.sender(), proposal.recipient());
+            error!(">>>> valid credit? {:?}", valid_credit);
             // else, we have some corrupt data. (todo: Do we need to act on that fact?)
             Err(Error::InvalidCreditOrDebit)
         }
