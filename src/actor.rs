@@ -78,9 +78,21 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
     ///
     pub fn from_info(signing: S, info: WalletInfo, replica_validator: V) -> Result<Actor<V, S>> {
         let mut actor = Self::new(signing, info.replicas, replica_validator);
-        if let Some(e) = actor.from_history(info.history)? {
-            actor.apply(ActorEvent::TransfersSynched(e))?;
+        match actor.from_history(info.history) {
+            Ok(Some(event)) =>  actor.apply(ActorEvent::TransfersSynched(event))?,
+            Ok(None) => {},
+            Err(error) => {
+                match error {
+                    Error::NothingToSync => {
+                        // do nothing
+                    },
+                    _ => {
+                        return Err(error)
+                    }
+                }
+            }
         }
+
         Ok(actor)
     }
 
