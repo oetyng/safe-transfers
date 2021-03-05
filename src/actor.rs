@@ -211,9 +211,10 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
     pub fn receive(&self, validation: TransferValidated) -> Outcome<TransferValidationReceived> {
         // Always verify signature first! (as to not leak any information).
         if self.verify(&validation).is_err() {
+            debug!(">>>>SIG NOT VALID");
             return Err(Error::InvalidSignature);
         }
-        debug!("Actor: Verified validation.");
+        debug!(">>>>Actor: Verified validation.");
 
         let signed_debit = &validation.signed_debit;
         let signed_credit = &validation.signed_credit;
@@ -241,6 +242,8 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
         } else {
             return Err(Error::NoSetForDebitId(validation.id()));
         }
+
+        debug!(">>>>>>AFTER THE CHECKS");
 
         // TODO: Cover scenario where replica keys might have changed during an ongoing transfer.
         let map = self
@@ -610,7 +613,7 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
         signed_debit: &SignedDebit,
         signed_credit: &SignedCredit,
     ) -> Result<()> {
-        debug!("Actor: Verifying is our transfer!");
+        debug!("Actor: Verifying is this our transfer?!");
         let valid_debit = self
             .signing
             .verify(&signed_debit.actor_signature, &signed_debit.debit);

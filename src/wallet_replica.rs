@@ -215,7 +215,7 @@ impl WalletReplica {
                 transfer_proof: transfer_proof.clone(),
             })
         } else {
-            Outcome::rejected(Error::InvalidOperation)
+            Outcome::rejected(Error::OperationOutOfOrder(debit.id().counter, self.wallet.next_debit()))
             // from this place this code won't happen, but history validates the transfer is actually debits from it's owner).
         }
     }
@@ -424,7 +424,7 @@ impl WalletReplica {
         let signed_credit = signed_transfer.credit();
         let debit = &signed_debit.debit;
 
-        debug!(">>>> !!!!!! debit counter for this validation is: {:?}, the transfer is: {:?}", debit.id.counter, signed_transfer.credit_id());
+        debug!(">>>> !!!!!! debit counter for this validation is: {:?}, the transfer is for: {:?}", debit.id.counter, signed_transfer.credit().amount());
         
         let credit = &signed_credit.credit;
 
