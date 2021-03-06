@@ -377,7 +377,7 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
         if !credits.is_empty() || !debits.is_empty() {
             Outcome::success(TransfersSynched(ActorHistory { credits, debits }))
         } else {
-            Err(Error::NothingToSync) // TODO: the error is actually that credits and/or debits failed validation..
+            Err(Error::InvalidActorHistory) // TODO: the error is actually that credits and/or debits failed validation..
         }
     }
 
