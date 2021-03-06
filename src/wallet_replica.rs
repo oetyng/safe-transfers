@@ -215,7 +215,10 @@ impl WalletReplica {
                 transfer_proof: transfer_proof.clone(),
             })
         } else {
-            Outcome::rejected(Error::OperationOutOfOrder(debit.id().counter, self.wallet.next_debit()))
+            Outcome::rejected(Error::OperationOutOfOrder(
+                debit.id().counter,
+                self.wallet.next_debit(),
+            ))
             // from this place this code won't happen, but history validates the transfer is actually debits from it's owner).
         }
     }
@@ -424,8 +427,12 @@ impl WalletReplica {
         let signed_credit = signed_transfer.credit();
         let debit = &signed_debit.debit;
 
-        debug!(">>>> !!!!!! debit counter for this validation is: {:?}, the transfer is for: {:?}", debit.id.counter, signed_transfer.credit().amount());
-        
+        debug!(
+            ">>>> !!!!!! debit counter for this validation is: {:?}, the transfer is for: {:?}",
+            debit.id.counter,
+            signed_transfer.credit().amount()
+        );
+
         let credit = &signed_credit.credit;
 
         // Always verify signature first! (as to not leak any information).
@@ -556,7 +563,12 @@ impl WalletReplica {
             });
             Outcome::success(proposal)
         } else {
-            error!(">>>> valid debit? {:?} : sender: {:?} recipient {:?}", valid_debit, proposal.sender(), proposal.recipient());
+            error!(
+                ">>>> valid debit? {:?} : sender: {:?} recipient {:?}",
+                valid_debit,
+                proposal.sender(),
+                proposal.recipient()
+            );
             error!(">>>> valid credit? {:?}", valid_credit);
             // else, we have some corrupt data. (todo: Do we need to act on that fact?)
             Err(Error::InvalidCreditOrDebit)
