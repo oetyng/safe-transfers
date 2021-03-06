@@ -50,7 +50,9 @@ pub enum Error {
     #[error("Transfer not expected for this actor {0:?}")]
     NoSetForTransferId(Dot<PublicKey>),
     /// Proposed operation is not the next in sequence. The debit op should be current actor count + 1
-    #[error("Operation out of order: debit's counter is '{0}', actor next expected op count is '{1}'")]
+    #[error(
+        "Operation out of order: debit's counter is '{0}', actor next expected op count is '{1}'"
+    )]
     OperationOutOfOrder(u64, u64),
     /// This account has not seen any debits yet. Sent debit should be 0 but was not.
     #[error("Operation out of order debit counter should be 0")]
@@ -76,7 +78,6 @@ pub enum Error {
     /// Adding this transfer would cause an overflow
     #[error("Overflow when adding balance {0} and credit of: {1}")]
     AdditionOverflow(Token, Token),
- 
     /// Receive validation failed..
     #[error("Receive validation failed")]
     ReceiveValidationFailed,

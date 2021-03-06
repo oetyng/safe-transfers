@@ -222,7 +222,7 @@ mod test {
         };
         let _ = wallet_replica
             .genesis(&genesis_credit, || past_key)?
-            .ok_or(Error::GetGenesisFailed)?;
+            .ok_or(Error::GenesisFailed)?;
 
         let event = ReplicaEvent::TransferPropagated(sn_data_types::TransferPropagated {
             credit_proof: genesis_credit.clone(),
@@ -373,8 +373,8 @@ mod test {
         // 1. Init transfer at Sender Actor.
         let transfer = init_transfer(&mut sender, recipient.actor.id())?;
         // 2. Validate at Sender Replicas.
-        let debit_proof =
-            validate_at_sender_replicas(transfer, &mut sender)?.ok_or(Error::SenderValidationFailed)?;
+        let debit_proof = validate_at_sender_replicas(transfer, &mut sender)?
+            .ok_or(Error::SenderValidationFailed)?;
         // 3. Register at Sender Replicas.
         register_at_debiting_replicas(&debit_proof, &mut sender_section)?;
         // 4. Propagate to Recipient Replicas.
@@ -527,7 +527,7 @@ mod test {
         let wallet = section.elders[0]
             .replicas
             .get(&recipient.actor.id())
-            .ok_or(Error::WalletNotFound(recipient.actor.id()))?;
+            .ok_or_else(|| Error::WalletNotFound(recipient.actor.id()))?;
         let snapshot = wallet.wallet().ok_or(Error::CouldNotGetWalletForReplica)?;
         let state = recipient
             .actor
