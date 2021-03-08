@@ -436,7 +436,7 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
     /// There is no validation of an event, it is assumed to have
     /// been properly validated before raised, and thus anything that breaks is a bug.
     pub fn apply(&mut self, event: ActorEvent) -> Result<()> {
-        debug!(">>>>> ********* transfers Applying event {:?}", event);
+        debug!(">>>>> ********* Transfer Actor {}: applying event {:?}", self.id(), event);
         match event {
             ActorEvent::TransferInitiated(e) => {
                 self.next_expected_debit = e.id().counter + 1;
