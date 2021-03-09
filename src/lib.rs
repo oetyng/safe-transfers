@@ -32,7 +32,9 @@ mod wallet;
 mod wallet_replica;
 
 pub use self::{
-    actor::Actor as TransferActor, error::Error, wallet::Wallet, wallet_replica::WalletReplica,
+    actor::signing_actor::SigningActor as TransferActor,
+    actor::ReadOnlyActor as ReadOnlyTransferActor, error::Error, wallet::Wallet,
+    wallet_replica::WalletReplica,
 };
 
 use serde::{Deserialize, Serialize};
@@ -161,8 +163,9 @@ pub struct TransferRegistrationSent {
 #[allow(unused)]
 mod test {
     use crate::{
-        actor::Actor, test_utils, test_utils::*, wallet, wallet_replica::WalletReplica, ActorEvent,
-        Error, ReplicaValidator, Result, TransferInitiated, Wallet,
+        actor::signing_actor::SigningActor, actor::ReadOnlyActor, test_utils, test_utils::*,
+        wallet, wallet_replica::WalletReplica, ActorEvent, Error, ReplicaValidator, Result,
+        TransferInitiated, Wallet,
     };
     use crdts::{
         quickcheck::{quickcheck, TestResult},
@@ -235,15 +238,14 @@ mod test {
             println!("Actor id: {}", actor.actor.id());
             if actor.actor.id() == genesis_key {
                 println!("Found actor!");
-                if let Some(synched_event) = actor.actor.from_history(ActorHistory {
+                let synched_event = actor.actor.from_history(ActorHistory {
                     credits: vec![genesis_credit.clone()],
                     debits: vec![],
-                })? {
-                    actor
-                        .actor
-                        .apply(ActorEvent::TransfersSynched(synched_event))?;
-                    actor_balance = Some(actor.actor.balance());
-                }
+                })?;
+                actor
+                    .actor
+                    .apply(ActorEvent::TransfersSynched(synched_event))?;
+                actor_balance = Some(actor.actor.balance());
                 break;
             }
         }
@@ -409,8 +411,7 @@ mod test {
     fn init_transfer(sender: &mut TestActor, to: PublicKey) -> Result<TransferInitiated> {
         let transfer = sender
             .actor
-            .transfer(sender.actor.balance(), to, "asdf".to_string())?
-            .ok_or(Error::TransferCreationFailed)?;
+            .transfer(sender.actor.balance(), to, "asdf".to_string())?;
 
         sender
             .actor
@@ -449,18 +450,12 @@ mod test {
             // then apply to inmem state
             wallet_replica.apply(ReplicaEvent::TransferValidated(validation.clone()))?;
 
-            let validation_received = sender
-                .actor
-                .receive(validation)?
-                .ok_or(Error::ReceiveValidationFailed)?;
+            let validation_received = sender.actor.receive(validation)?;
             sender.actor.apply(ActorEvent::TransferValidationReceived(
                 validation_received.clone(),
             ))?;
             if let Some(proof) = validation_received.proof {
-                let registered = sender
-                    .actor
-                    .register(proof.clone())?
-                    .ok_or(Error::RegisterProofFailed)?;
+                let registered = sender.actor.register(proof.clone())?;
                 sender
                     .actor
                     .apply(ActorEvent::TransferRegistrationSent(registered))?;
@@ -529,14 +524,11 @@ mod test {
             .get(&recipient.actor.id())
             .ok_or_else(|| Error::WalletNotFound(recipient.actor.id()))?;
         let snapshot = wallet.wallet().ok_or(Error::CouldNotGetWalletForReplica)?;
-        let state = recipient
-            .actor
-            .synch(
-                snapshot.balance,
-                snapshot.debit_version,
-                snapshot.credit_ids,
-            )?
-            .ok_or(Error::SyncFailed)?;
+        let state = recipient.actor.synch(
+            snapshot.balance,
+            snapshot.debit_version,
+            snapshot.credit_ids,
+        )?;
         recipient.actor.apply(ActorEvent::StateSynched(state))
     }
 
@@ -596,11 +588,9 @@ mod test {
     fn setup_actor(wallet: TestWallet, sections: &[Section]) -> Result<TestActor> {
         let section = find_group(wallet.section, sections).ok_or(Error::CouldNotFindGroup)?;
 
-        let actor = Actor::from_snapshot(
-            wallet.wallet,
+        let actor = SigningActor::new(
             wallet.keypair,
-            section.id.clone(),
-            Validator {},
+            ReadOnlyActor::from_snapshot(wallet.wallet, section.id.clone(), Validator {}),
         );
 
         Ok(TestActor { actor, section })
