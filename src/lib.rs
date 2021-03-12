@@ -170,8 +170,8 @@ mod test {
     };
     use sn_data_types::{
         ActorHistory, Credit, CreditAgreementProof, CreditId, Debit, Keypair, OwnerType, PublicKey,
-        ReplicaEvent, SignatureShare, SignedCredit, SignedDebit, SignedTransfer, Token, Transfer,
-        TransferAgreementProof,
+        ReplicaEvent, SectionElders, SignatureShare, SignedCredit, SignedDebit, SignedTransfer,
+        Token, Transfer, TransferAgreementProof,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
@@ -595,13 +595,12 @@ mod test {
 
     fn setup_actor(wallet: TestWallet, sections: &[Section]) -> Result<TestActor> {
         let section = find_group(wallet.section, sections).ok_or(Error::CouldNotFindGroup)?;
-
-        let actor = Actor::from_snapshot(
-            wallet.wallet,
-            wallet.keypair,
-            section.id.clone(),
-            Validator {},
-        );
+        let replicas = SectionElders {
+            prefix: xor_name::Prefix::default(),
+            key_set: section.id.clone(),
+            names: Default::default(),
+        };
+        let actor = Actor::from_snapshot(wallet.wallet, wallet.keypair, replicas, Validator {});
 
         Ok(TestActor { actor, section })
     }

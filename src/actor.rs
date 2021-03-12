@@ -18,7 +18,8 @@ use itertools::Itertools;
 use log::debug;
 use sn_data_types::{
     ActorHistory, Credit, CreditAgreementProof, CreditId, Debit, DebitId, OwnerType, PublicKey,
-    SignatureShare, SignedCredit, SignedDebit, Signing, Token, TransferAgreementProof, WalletInfo,
+    SectionElders, SignatureShare, SignedCredit, SignedDebit, Signing, Token,
+    TransferAgreementProof, WalletInfo,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -43,7 +44,7 @@ pub struct Actor<V: ReplicaValidator, S: Signing> {
     /// After quorum is reached and proof produced, the set is cleared.
     accumulating_validations: HashMap<DebitId, HashMap<usize, TransferValidated>>,
     /// The PK Set of the Replicas
-    replicas: PublicKeySet,
+    replicas: SectionElders,
     /// The passed in replica_validator, contains the logic from upper layers
     /// for determining if a remote group of Replicas, represented by a PublicKey, is indeed valid.
     replica_validator: V,
@@ -60,7 +61,7 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
     /// If upper layer trusts them, the validator might do nothing but return "true".
     /// If it wants to execute some logic for verifying that the remote replicas are in fact part of the system,
     /// before accepting credits, it then implements that in the replica_validator.
-    pub fn new(signing: S, replicas: PublicKeySet, replica_validator: V) -> Actor<V, S> {
+    pub fn new(signing: S, replicas: SectionElders, replica_validator: V) -> Actor<V, S> {
         let id = signing.id();
         let wallet = Wallet::new(id.clone());
         Actor {
@@ -98,7 +99,7 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
     pub fn from_snapshot(
         wallet: Wallet,
         signing: S,
-        replicas: PublicKeySet,
+        replicas: SectionElders,
         replica_validator: V,
     ) -> Actor<V, S> {
         let id = wallet.id().clone();
@@ -135,11 +136,11 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
 
     ///
     pub fn replicas_public_key(&self) -> PublicKey {
-        PublicKey::Bls(self.replicas.public_key())
+        PublicKey::Bls(self.replicas.key_set.public_key())
     }
 
     ///
-    pub fn replicas_key_set(&self) -> PublicKeySet {
+    pub fn replicas(&self) -> SectionElders {
         self.replicas.clone()
     }
 
@@ -254,8 +255,8 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
         // If the previous count of accumulated + current validation coming in here,
         // is greater than the threshold, then we have reached the quorum needed
         // to build the proof. (Quorum = threshold + 1)
-        let majority =
-            map.len() + 1 > self.replicas.threshold() && self.replicas == validation.replicas;
+        let majority = map.len() + 1 > self.replicas.key_set.threshold()
+            && self.replicas.key_set == validation.replicas;
         if majority {
             let debit_bytes = match bincode::serialize(&signed_debit) {
                 Err(_) => return Err(Error::Serialisation("Serialization Error".to_string())),
@@ -284,16 +285,26 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
             // Combine shares to produce the main signature.
             let debit_sig = self
                 .replicas
+                .key_set
                 .combine_signatures(&debit_sig_shares)
                 .map_err(|_| Error::CannotAggregate)?;
             // Combine shares to produce the main signature.
             let credit_sig = self
                 .replicas
+                .key_set
                 .combine_signatures(&credit_sig_shares)
                 .map_err(|_| Error::CannotAggregate)?;
 
-            let valid_debit = self.replicas.public_key().verify(&debit_sig, debit_bytes);
-            let valid_credit = self.replicas.public_key().verify(&credit_sig, credit_bytes);
+            let valid_debit = self
+                .replicas
+                .key_set
+                .public_key()
+                .verify(&debit_sig, debit_bytes);
+            let valid_credit = self
+                .replicas
+                .key_set
+                .public_key()
+                .verify(&credit_sig, credit_bytes);
 
             // Validate the combined signatures. If the shares were valid, this can't fail.
             if valid_debit && valid_credit {
@@ -302,7 +313,7 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
                     debit_sig: sn_data_types::Signature::Bls(debit_sig),
                     signed_credit: signed_credit.clone(),
                     credit_sig: sn_data_types::Signature::Bls(credit_sig),
-                    debiting_replicas_keys: self.replicas.clone(),
+                    debiting_replicas_keys: self.replicas.key_set.clone(),
                 });
             } // else, we have some corrupt data. (todo: Do we need to act on that fact?)
         }
@@ -436,7 +447,11 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
     /// There is no validation of an event, it is assumed to have
     /// been properly validated before raised, and thus anything that breaks is a bug.
     pub fn apply(&mut self, event: ActorEvent) -> Result<()> {
-        debug!(">>>>> ********* Transfer Actor {}: applying event {:?}", self.id(), event);
+        debug!(
+            ">>>>> ********* Transfer Actor {}: applying event {:?}",
+            self.id(),
+            event
+        );
         match event {
             ActorEvent::TransferInitiated(e) => {
                 self.next_expected_debit = e.id().counter + 1;
@@ -444,10 +459,10 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
                 Ok(())
             }
             ActorEvent::TransferValidationReceived(e) => {
-                if e.proof.is_some() {
-                    // if we have a proof, then we have a valid set of replicas (potentially new) to update with
-                    self.replicas = e.validation.replicas.clone();
-                }
+                // if e.proof.is_some() {
+                //     // if we have a proof, then we have a valid set of replicas (potentially new) to update with
+                //     self.replicas = e.validation.replicas.clone();
+                // }
                 match self.accumulating_validations.get_mut(&e.validation.id()) {
                     Some(map) => {
                         let _ = map.insert(e.validation.replica_debit_sig.index, e.validation);
@@ -561,7 +576,7 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
         let valid_debit = match bincode::serialize(&proof.signed_debit) {
             Err(_) => return Err(Error::Serialisation("Could not serialise debit".into())),
             Ok(data) => {
-                let public_key = sn_data_types::PublicKey::Bls(self.replicas.public_key());
+                let public_key = sn_data_types::PublicKey::Bls(self.replicas.key_set.public_key());
                 public_key.verify(&proof.debit_sig, &data).is_ok()
             }
         };
@@ -569,7 +584,7 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
         let valid_credit = match bincode::serialize(&proof.signed_credit) {
             Err(_) => return Err(Error::Serialisation("Could not serialise credit".into())),
             Ok(data) => {
-                let public_key = sn_data_types::PublicKey::Bls(self.replicas.public_key());
+                let public_key = sn_data_types::PublicKey::Bls(self.replicas.key_set.public_key());
                 public_key.verify(&proof.credit_sig, &data).is_ok()
             }
         };
@@ -643,7 +658,7 @@ impl<V: ReplicaValidator + fmt::Debug, S: Signing + fmt::Debug> fmt::Debug for A
             self.wallet,
             self.next_expected_debit,
             self.accumulating_validations,
-            self.replicas.public_key(),
+            self.replicas.key_set.public_key(),
             self.replica_validator
         )
     }
