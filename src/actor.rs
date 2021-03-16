@@ -19,7 +19,7 @@ use log::debug;
 use sn_data_types::{
     ActorHistory, Credit, CreditAgreementProof, CreditId, Debit, DebitId, OwnerType, PublicKey,
     SectionElders, SignatureShare, SignedCredit, SignedDebit, Signing, Token,
-    TransferAgreementProof, WalletInfo,
+    TransferAgreementProof, WalletHistory,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -77,7 +77,7 @@ impl<V: ReplicaValidator, S: Signing> Actor<V, S> {
     }
 
     ///
-    pub fn from_info(signing: S, info: WalletInfo, replica_validator: V) -> Result<Actor<V, S>> {
+    pub fn from_info(signing: S, info: WalletHistory, replica_validator: V) -> Result<Actor<V, S>> {
         let mut actor = Self::new(signing, info.replicas, replica_validator);
         match actor.from_history(info.history) {
             Ok(Some(event)) => actor.apply(ActorEvent::TransfersSynched(event))?,
@@ -673,11 +673,12 @@ mod test {
     use crdts::Dot;
     use serde::Serialize;
     use sn_data_types::{
-        Credit, Debit, Keypair, PublicKey, Signature, SignatureShare, Token,
+        Credit, Debit, Keypair, PublicKey, SectionElders, Signature, SignatureShare, Token,
         TransferAgreementProof, TransferValidated,
     };
     use std::collections::BTreeMap;
     use threshold_crypto::{SecretKey, SecretKeySet};
+    use xor_name::Prefix;
     struct Validator {}
 
     impl ReplicaValidator for Validator {
@@ -923,7 +924,13 @@ mod test {
         let mut wallet = Wallet::new(OwnerType::Single(credit.recipient()));
         wallet.apply_credit(credit)?;
 
-        let actor = Actor::from_snapshot(wallet, keypair, replicas_id, replica_validator);
+        let replicas = SectionElders {
+            prefix: Prefix::default(),
+            names: Default::default(),
+            key_set: replicas_id,
+        };
+
+        let actor = Actor::from_snapshot(wallet, keypair, replicas, replica_validator);
         Ok((actor, bls_secret_key))
     }
 
