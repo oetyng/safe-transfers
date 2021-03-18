@@ -69,8 +69,8 @@ pub enum Error {
     /// Debit is not from this wallet
     #[error("Debit is not from wallet {0}. Debit: {1:?}")]
     DebitDoesNotBelong(PublicKey, Debit),
-    /// Credit is not from this wallet
-    #[error("Credit is not from wallet {0}. Credit: {1:?}")]
+    /// Credit is not to this wallet
+    #[error("Credit is not to wallet {0}. Credit: {1:?}")]
     CreditDoesNotBelong(PublicKey, Credit),
     /// Subtracting this transfer would cause an overlow
     #[error("Overflow when subtracting {0} from balance of: {1}")]
